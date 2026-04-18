@@ -153,7 +153,7 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary }) => 
         <View style={[styles.statsRow, { marginTop: 12 }]}>
           <ImpactStatCard
             value={donorData.livesSaved}
-            label="LIVES SAVED"
+            label="LIVES HELPED"
             icon="favorite"
             color={COLORS.primary}
             surface={surface}
