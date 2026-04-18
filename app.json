@@ -1,0 +1,71 @@
+{
+  "expo": {
+    "name": "Blood Hive", // The display name of your app on the phone's home screen
+    "slug": "blood-hive", // The internal URL-friendly name for Expo's servers
+    "version": "1.0.0", // Your app's version (increment this when you push updates)
+    "orientation": "portrait", // Locks the app to vertical mode (won't rotate sideways)
+    "icon": "./assets/images/logo.png", // The fallback icon for iOS and older Androids
+    "scheme": "bloodhive", // Used for deep linking (e.g., opening the app via bloodhive:// link)
+    "userInterfaceStyle": "automatic", // Switches between light/dark mode based on phone settings
+    
+    
+    "ios": {
+      "supportsTablet": true // Allows the app to be installed and scaled on iPads
+    },
+
+    "android": {
+      "adaptiveIcon": {
+        // Foreground is your logo (should be square with padding)
+        "foregroundImage": "./assets/images/icon.png", 
+        // The background color that fills the space behind your logo
+        "backgroundColor": "#FF0000" 
+      },
+      "predictiveBackGestureEnabled": false, // Disables the modern Android "peek" animation for the back button
+      "package": "com.vexplaysgames.bloodhive" // The unique ID for the Play Store (cannot be changed after upload)
+    },
+
+    "web": {
+      "output": "static", // Optimizes the web version for static hosting (like Vercel/Netlify)
+      "favicon": "./assets/images/favicon.png" // The little icon in the browser tab
+    },
+
+    "plugins": [
+      "expo-router", // Enables the file-based routing system you're using
+      [
+        "expo-splash-screen", // Configures the loading screen shown when the app starts
+        {
+          "image": "./assets/images/logo.png", // Image shown on the splash screen
+          "imageWidth": 200, // Size of that image
+          "resizeMode": "contain", // Ensures the image fits without being cropped
+          "backgroundColor": "#ffffff", // Background color while loading (Light mode)
+          "dark": {
+            "backgroundColor": "#000000" // Background color while loading (Dark mode)
+          }
+        }
+      ],
+      "expo-font", // Allows you to load custom .ttf or .otf fonts
+      "@react-native-community/datetimepicker" // Links the native Android/iOS date picker code
+    ],
+
+    "experiments": {
+      "typedRoutes": true, // Gives you TypeScript autocomplete for your page links (e.g., router.push('/home'))
+      "reactCompiler": true // Uses the new React 19 compiler for better performance
+    },
+
+    "extra": {
+      "router": {}, // Extra config for the expo-router
+      "eas": {
+        "projectId": "2552bd13-3ec7-4f86-b323-d2fb1cfd1bb1" // Connects your local code to your specific Expo Dashboard project
+      }
+    },
+
+    "runtimeVersion": {
+      "policy": "appVersion" // Helps EAS Updates know which "version" of the native code a user has
+    },
+
+    "updates": {
+      // The endpoint where the app checks for "Over-the-Air" JavaScript updates
+      "url": "https://u.expo.dev/2552bd13-3ec7-4f86-b323-d2fb1cfd1bb1" 
+    }
+  }
+}
