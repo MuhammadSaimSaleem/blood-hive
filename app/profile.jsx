@@ -65,6 +65,7 @@ const ProfileScreen = () => {
     try {
       setLoading(true);
       await initDB();
+      getLocalProfile.apply;
 
       const cachedData = await getLocalProfile();
       if (cachedData) {
