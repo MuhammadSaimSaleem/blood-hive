@@ -418,7 +418,7 @@ const RequestDetailsScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, paddingTop: 30 },
+  safeArea: { flex: 1 },
   lightContainer: { backgroundColor: COLORS.backgroundLight },
   darkContainer: { backgroundColor: COLORS.backgroundDark },
   textPrimaryLight: { color: COLORS.textLightPrimary },

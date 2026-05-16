@@ -690,7 +690,7 @@ const RecipientDashboard = ({
 
         <TouchableOpacity style={[styles.card, { backgroundColor: surface, marginTop: 12 }]}>
           <ImageBackground
-            source={{ uri: "https://images.unsplash.com/photo-1615461066841-6116ecaabb04?q=80&w=500&auto=format&fit=crop" }}
+            source={require('../assets/images/exclamation.png')}
             style={styles.resourceImage}
             imageStyle={{ borderRadius: 8 }}
           />

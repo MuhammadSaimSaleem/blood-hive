@@ -66,7 +66,6 @@ function RootLayoutContent() {
         <Stack.Screen name="profile" options={{ title: "Profile" }} />
         <Stack.Screen name="history" options={{ title: "History" }} />
         <Stack.Screen name="support" options={{ title: "Support" }} />
-        <Stack.Screen name="debug" options={{ title: "Debug" }} />
         <Stack.Screen name="schedule_cycle" options={{ title: "Debug" }} />
       </Stack>
     </View>

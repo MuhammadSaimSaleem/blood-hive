@@ -1,70 +1,69 @@
 {
   "expo": {
-    "name": "Blood Hive", // The display name of your app on the phone's home screen
-    "slug": "blood-hive", // The internal URL-friendly name for Expo's servers
-    "version": "1.0.0", // Your app's version (increment this when you push updates)
-    "orientation": "portrait", // Locks the app to vertical mode (won't rotate sideways)
-    "icon": "./assets/images/logo.png", // The fallback icon for iOS and older Androids
-    "scheme": "bloodhive", // Used for deep linking (e.g., opening the app via bloodhive:// link)
-    "userInterfaceStyle": "automatic", // Switches between light/dark mode based on phone settings
+    "name": "Blood Hive",
+    "slug": "blood-hive",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/logo.png",
+    "scheme": "bloodhive",
+    "userInterfaceStyle": "automatic", 
     
     
     "ios": {
-      "supportsTablet": true // Allows the app to be installed and scaled on iPads
+      "supportsTablet": true
     },
 
     "android": {
       "adaptiveIcon": {
-        // Foreground is your logo (should be square with padding)
         "foregroundImage": "./assets/images/icon.png", 
-        // The background color that fills the space behind your logo
         "backgroundColor": "#FF0000" 
       },
-      "predictiveBackGestureEnabled": false, // Disables the modern Android "peek" animation for the back button
-      "package": "com.vexplaysgames.bloodhive" // The unique ID for the Play Store (cannot be changed after upload)
+      "predictiveBackGestureEnabled": false, 
+      "package": "com.vexplaysgames.bloodhive",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyAsm5O59l9D08wEEIycr-I0mO3HVZ2iDJ0"
+        }
+      }
     },
 
     "web": {
-      "output": "static", // Optimizes the web version for static hosting (like Vercel/Netlify)
-      "favicon": "./assets/images/favicon.png" // The little icon in the browser tab
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
     },
 
     "plugins": [
-      "expo-router", // Enables the file-based routing system you're using
+      "expo-router",
       [
-        "expo-splash-screen", // Configures the loading screen shown when the app starts
+        "expo-splash-screen",
         {
-          "image": "./assets/images/logo.png", // Image shown on the splash screen
-          "imageWidth": 200, // Size of that image
-          "resizeMode": "contain", // Ensures the image fits without being cropped
-          "backgroundColor": "#ffffff", // Background color while loading (Light mode)
-          "dark": {
-            "backgroundColor": "#000000" // Background color while loading (Dark mode)
-          }
+          "image": "./assets/images/logo.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
         }
       ],
-      "expo-font", // Allows you to load custom .ttf or .otf fonts
-      "@react-native-community/datetimepicker" // Links the native Android/iOS date picker code
+      "expo-font",
+      "@react-native-community/datetimepicker"
     ],
 
     "experiments": {
-      "typedRoutes": true, // Gives you TypeScript autocomplete for your page links (e.g., router.push('/home'))
-      "reactCompiler": true // Uses the new React 19 compiler for better performance
+      "typedRoutes": true,
+      "reactCompiler": true
     },
 
     "extra": {
-      "router": {}, // Extra config for the expo-router
+      "router": {},
       "eas": {
-        "projectId": "2552bd13-3ec7-4f86-b323-d2fb1cfd1bb1" // Connects your local code to your specific Expo Dashboard project
+        "projectId": "2552bd13-3ec7-4f86-b323-d2fb1cfd1bb1"
       }
     },
 
     "runtimeVersion": {
-      "policy": "appVersion" // Helps EAS Updates know which "version" of the native code a user has
+      "policy": "appVersion"
     },
 
     "updates": {
-      // The endpoint where the app checks for "Over-the-Air" JavaScript updates
       "url": "https://u.expo.dev/2552bd13-3ec7-4f86-b323-d2fb1cfd1bb1" 
     }
   }

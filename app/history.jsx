@@ -164,7 +164,6 @@ const HistoryScreen = () => {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    paddingTop: 30,
   },
   lightContainer: {
     backgroundColor: COLORS.backgroundLight,

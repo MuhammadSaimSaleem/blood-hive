@@ -102,8 +102,9 @@ const DonorLiveMapScreen = () => {
       try {
         const delta = 0.14; // ~15 km bounding box
         const { data, error } = await supabase
-          .from("donors")
+          .from("users")
           .select("id, name, blood_type, latitude, longitude, phone")
+          .eq("role", "donors")
           .eq("blood_type", bloodType)
           .eq("is_available", true)
           .gte("latitude", region.latitude - delta)
@@ -150,7 +151,7 @@ const DonorLiveMapScreen = () => {
       .channel("donors-live")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "donors" },
+        { event: "*", schema: "public", table: "users" },
         () => fetchDonors()
       )
       .subscribe();
@@ -626,7 +627,7 @@ const styles = StyleSheet.create({
   // Header
   header: {
     position: "absolute",
-    top: Platform.OS === "ios" ? 54 : 28,
+    top: Platform.OS === "ios" ? 54 : 34,
     left: 18,
     right: 18,
     flexDirection: "row",
@@ -677,7 +678,7 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
   },
-  headerTitle: { fontSize: 15, fontWeight: "700", letterSpacing: -0.3 },
+  headerTitle: { fontSize: 15, fontWeight: "700", letterSpacing: -0.3,},
   headerSub: { fontSize: 12, fontWeight: "400" },
 
   // Donor card stack

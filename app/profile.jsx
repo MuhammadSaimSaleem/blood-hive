@@ -399,7 +399,7 @@ const ProfileScreen = () => {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  safeArea:       { flex: 1, paddingTop: 30 },
+  safeArea:       { flex: 1 },
   centerContent:  { justifyContent: "center", alignItems: "center" },
   lightContainer: { backgroundColor: COLORS.backgroundLight },
   darkContainer:  { backgroundColor: COLORS.backgroundDark  },

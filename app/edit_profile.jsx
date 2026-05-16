@@ -191,7 +191,7 @@ const EditProfileScreen = () => {
 
         <TouchableOpacity
           onPress={toggleTheme}
-          style={styles.headerIconButton}
+          style={[styles.headerIconButton, {opacity: 0}]}
         >
           <MaterialCommunityIcons
             name="theme-light-dark"
@@ -292,11 +292,11 @@ const EditProfileScreen = () => {
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={[styles.label, textSecondary]}>CITY</Text>
+              <Text style={[styles.label, textSecondary]}>Address</Text>
               <TextInput
                 value={city}
                 onChangeText={setCity}
-                placeholder="Enter city"
+                placeholder="Enter Address"
                 placeholderTextColor={textSecondary.color}
                 style={[
                   styles.input,
@@ -355,7 +355,6 @@ const EditProfileScreen = () => {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    paddingTop: 30,
   },
   centerContent: {
     justifyContent: "center",
@@ -437,7 +436,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   bloodTypeChip: {
-    minWidth: 58,
+    minWidth: 56,
     height: 42,
     borderRadius: 12,
     borderWidth: 1,

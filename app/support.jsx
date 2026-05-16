@@ -260,7 +260,6 @@ const SupportScreen = () => {
 
 const styles = StyleSheet.create({
   safeArea: {
-    paddingTop: 30,
     flex: 1,
   },
   lightContainer: {

@@ -347,7 +347,7 @@ const ChatScreen = () => {
 // STYLES (Blended from History & Profile)
 // ==========================================
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, paddingTop: Platform.OS === 'android' ? 30 : 0 },
+  safeArea: { flex: 1 },
   lightContainer: { backgroundColor: COLORS.backgroundLight },
   darkContainer: { backgroundColor: COLORS.backgroundDark },
   
