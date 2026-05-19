@@ -17,7 +17,7 @@ function RootLayoutContent() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) router.replace('/dashboard');
+      if (session) router.replace('/main');
     });
   }, []);
 

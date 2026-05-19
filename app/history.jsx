@@ -1,73 +1,109 @@
 import { MaterialIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useTheme } from '../context';
+import { useTheme } from "../context";
+import { supabase } from "../lib";
 
 const COLORS = {
-  primary: "#D0021B",
-  backgroundLight: "#FFFFFF",
-  backgroundDark: "#121212",
-  surfaceLight: "#F0F5FA",
-  surfaceDark: "#1E1E1E",
-  textLightPrimary: "#1C1C1E",
-  textDarkPrimary: "#F2F2F7",
+  primary:            "#D0021B",
+  backgroundLight:    "#FFFFFF",
+  backgroundDark:     "#121212",
+  surfaceLight:       "#F0F5FA",
+  surfaceDark:        "#1E1E1E",
+  textLightPrimary:   "#1C1C1E",
+  textDarkPrimary:    "#F2F2F7",
   textLightSecondary: "#636366",
-  textDarkSecondary: "#8E8E93",
-  accentBlue: "#D92D20",
-  accentGreen: "#7ED321",
-  gray200: "#E5E7EB",
-  gray800: "#1F2937",
+  textDarkSecondary:  "#8E8E93",
+  accentBlue:         "#D92D20",
+  accentGreen:        "#7ED321",
 };
 
-const HistoryScreen = () => {
+const ACTION_META = {
+  created_blood_request:  { icon: "add-circle",         color: "#D92D20" },
+  updated_blood_request:  { icon: "edit",               color: "#1976D2" },
+  completed_blood_request:{ icon: "check-circle",       color: "#7ED321" },
+  cancelled_blood_request:{ icon: "cancel",             color: "#636366" },
+  deleted_blood_request:  { icon: "delete",             color: "#636366" },
+  accepted_donation:      { icon: "volunteer-activism", color: "#7ED321" },
+  declined_donation:      { icon: "thumb-down",         color: "#636366" },
+  scheduled_appointment:  { icon: "event",              color: "#1976D2" },
+  updated_profile:        { icon: "person",             color: "#7B1FA2" },
+  registered:             { icon: "how-to-reg",         color: "#7ED321" },
+};
+
+const DEFAULT_META = { icon: "history", color: "#636366" };
+
+const formatDate = (isoString) => {
+  if (!isoString) return "";
+  return new Date(isoString).toLocaleDateString("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+  });
+};
+
+const HistoryScreen = ({ setActiveTab }) => {
   const { isDarkMode } = useTheme();
 
-  const bgStyle = isDarkMode ? styles.darkContainer : styles.lightContainer;
-  const textPrimary = isDarkMode
-    ? styles.textPrimaryDark
-    : styles.textPrimaryLight;
-  const textSecondary = isDarkMode
-    ? styles.textSecondaryDark
-    : styles.textSecondaryLight;
-  const surface = isDarkMode ? COLORS.surfaceDark : COLORS.surfaceLight;
+  const [logs, setLogs]         = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError]   = useState(false);
 
-  const historyItems = [
-    {
-      title: "Blood Request Completed",
-      desc: "Emergency O+ request for City Hospital was successfully fulfilled.",
-      date: "Oct 12, 2023",
-      icon: "check-circle",
-      color: COLORS.accentGreen,
-    },
-    {
-      title: "Donation Appointment",
-      desc: "Scheduled appointment at Central Blood Bank.",
-      date: "Sep 28, 2023",
-      icon: "event",
-      color: COLORS.accentBlue,
-    },
-    {
-      title: "Request Cancelled",
-      desc: "The request for B- blood was cancelled by the requester.",
-      date: "Aug 15, 2023",
-      icon: "cancel",
-      color: "#636366",
-    },
-  ];
+  const bgStyle       = isDarkMode ? styles.darkContainer    : styles.lightContainer;
+  const textPrimary   = isDarkMode ? styles.textPrimaryDark  : styles.textPrimaryLight;
+  const textSecondary = isDarkMode ? styles.textSecondaryDark: styles.textSecondaryLight;
+  const surface       = isDarkMode ? COLORS.surfaceDark      : COLORS.surfaceLight;
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchLogs = async () => {
+      setIsLoading(true);
+      setHasError(false);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session || !isMounted) return;
+
+        const { data, error } = await supabase
+          .from("activity_logs")
+          .select("id, action, description, metadata, created_at")
+          .eq("user_id", session.user.id)
+          .order("created_at", { ascending: false })
+          .limit(50);
+
+        if (!isMounted) return;
+
+        if (error) {
+          console.error("Failed to fetch activity logs:", error.message);
+          setHasError(true);
+          return;
+        }
+
+        setLogs(data ?? []);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    };
+
+    fetchLogs();
+
+    return () => { isMounted = false; };
+  }, []);
 
   return (
-    <SafeAreaView style={[styles.safeArea, bgStyle]}>
+    <View style={[styles.safeArea, bgStyle]}>
       <View style={[styles.header, { backgroundColor: bgStyle.backgroundColor }]}>
         <TouchableOpacity
           style={styles.headerIconButton}
-          onPress={() => router.push("/dashboard")}
+          onPress={() => setActiveTab("dashboard")}
           activeOpacity={0.8}
         >
           <MaterialIcons
@@ -76,9 +112,7 @@ const HistoryScreen = () => {
             color={isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary}
           />
         </TouchableOpacity>
-
         <Text style={[styles.headerTitle, textPrimary]}>History</Text>
-
         <View style={styles.headerIconButton} />
       </View>
 
@@ -88,89 +122,79 @@ const HistoryScreen = () => {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.section}>
-          {historyItems.map((item, index) => (
-            <View key={index} style={[styles.card, { backgroundColor: surface }]}>
-              <View style={styles.historyRow}>
-                <View style={[styles.historyIconWrap, { backgroundColor: `${item.color}15` }]}>
-                  <MaterialIcons
-                    name={item.icon}
-                    size={22}
-                    color={item.color}
-                  />
-                </View>
-
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.cardTitle, textPrimary]}>
-                    {item.title}
-                  </Text>
-                  <Text style={[styles.bodyText, textSecondary]}>
-                    {item.desc}
-                  </Text>
-                  <Text style={[styles.dateText, { color: item.color }]}>
-                    {item.date}
-                  </Text>
-                </View>
-              </View>
+          {isLoading ? (
+            <View style={styles.centeredState}>
+              <ActivityIndicator size="large" color={COLORS.accentBlue} />
             </View>
-          ))}
+          ) : hasError ? (
+            <View style={styles.centeredState}>
+              <MaterialIcons name="error-outline" size={44} color={COLORS.accentBlue} />
+              <Text style={[styles.stateTitle, textPrimary]}>Something went wrong</Text>
+              <Text style={[styles.stateSubtitle, textSecondary]}>
+                Could not load your history. Pull to retry.
+              </Text>
+            </View>
+          ) : logs.length === 0 ? (
+            <View style={styles.centeredState}>
+              <MaterialIcons
+                name="history"
+                size={44}
+                color={isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary}
+              />
+              <Text style={[styles.stateTitle, textPrimary]}>No activity yet</Text>
+              <Text style={[styles.stateSubtitle, textSecondary]}>
+                Your actions will appear here.
+              </Text>
+            </View>
+          ) : (
+            logs.map((log) => {
+              const meta = ACTION_META[log.action] ?? DEFAULT_META;
+              return (
+                <View key={log.id} style={[styles.card, { backgroundColor: surface }]}>
+                  <View style={styles.historyRow}>
+                    <View
+                      style={[
+                        styles.historyIconWrap,
+                        { backgroundColor: `${meta.color}15` },
+                      ]}
+                    >
+                      <MaterialIcons name={meta.icon} size={22} color={meta.color} />
+                    </View>
+
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.cardTitle, textPrimary]}>
+                        {log.description}
+                      </Text>
+                      {log.metadata?.blood_type && (
+                        <Text style={[styles.metaTag, { color: meta.color }]}>
+                          Blood Type: {log.metadata.blood_type}
+                        </Text>
+                      )}
+                      {log.metadata?.units && (
+                        <Text style={[styles.metaTag, { color: meta.color }]}>
+                          Units: {log.metadata.units}
+                        </Text>
+                      )}
+                      <Text style={[styles.dateText, { color: meta.color }]}>
+                        {formatDate(log.created_at)}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            })
+          )}
         </View>
       </ScrollView>
-
-      <View
-        style={[
-          styles.bottomNav,
-          {
-            backgroundColor: isDarkMode
-              ? COLORS.backgroundDark
-              : COLORS.backgroundLight,
-            borderTopColor: isDarkMode ? "#2A2A2A" : "#E5E7EB",
-          },
-        ]}
-      >
-        {[
-          { icon: "dashboard", label: "Dashboard", route: "/dashboard" },
-          { icon: "chat", label: "Messages", route: "/messages" },
-          { icon: "history", label: "History", active: true, route: "/history" },
-          { icon: "support-agent", label: "Support", route: "/support" },
-        ].map((item, index) => (
-          <TouchableOpacity
-            key={index}
-            style={styles.navItem}
-            activeOpacity={0.8}
-            onPress={() => router.navigate(item.route)}
-          >
-            <MaterialIcons
-              name={item.icon}
-              size={24}
-              color={item.active ? COLORS.accentBlue : (isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary)}
-            />
-            <Text
-              style={[
-                styles.navLabel,
-                {
-                  color: item.active ? COLORS.accentBlue : (isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary),
-                },
-              ]}
-            >
-              {item.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </SafeAreaView>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-  },
-  lightContainer: {
-    backgroundColor: COLORS.backgroundLight,
-  },
-  darkContainer: {
-    backgroundColor: COLORS.backgroundDark,
-  },
+  safeArea:       { flex: 1 },
+  lightContainer: { backgroundColor: COLORS.backgroundLight },
+  darkContainer:  { backgroundColor: COLORS.backgroundDark  },
+
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -178,21 +202,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
-  headerIconButton: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    textAlign: "center",
-    flex: 1,
-  },
-  section: {
-    padding: 16,
-  },
+  headerIconButton: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
+  headerTitle:      { fontSize: 18, fontWeight: "700", textAlign: "center", flex: 1 },
+
+  section: { padding: 16 },
+
   card: {
     borderRadius: 12,
     padding: 16,
@@ -202,11 +216,7 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 14,
   },
-  historyRow: {
-    flexDirection: "row",
-    gap: 12,
-    alignItems: "flex-start",
-  },
+  historyRow:     { flexDirection: "row", gap: 12, alignItems: "flex-start" },
   historyIconWrap: {
     width: 44,
     height: 44,
@@ -214,45 +224,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  cardTitle: {
-    fontSize: 17,
-    fontWeight: "700",
-  },
-  bodyText: {
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 4,
-  },
-  dateText: {
-    fontSize: 13,
-    fontWeight: "600",
-    marginTop: 8,
-  },
-  bottomNav: {
-    paddingBottom: 10,
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 80,
-    flexDirection: "row",
-    justifyContent: "space-around",
-    alignItems: "center",
-    borderTopWidth: 1,
-  },
-  navItem: {
+  cardTitle: { fontSize: 15, fontWeight: "700", lineHeight: 20 },
+  metaTag:   { fontSize: 12, fontWeight: "600", marginTop: 4 },
+  dateText:  { fontSize: 13, fontWeight: "600", marginTop: 8 },
+
+  centeredState: {
     alignItems: "center",
     justifyContent: "center",
+    paddingVertical: 60,
+    gap: 8,
   },
-  navLabel: {
-    fontSize: 12,
-    fontWeight: "500",
-    marginTop: 2,
-  },
-  textPrimaryLight: { color: COLORS.textLightPrimary },
+  stateTitle:    { fontSize: 17, fontWeight: "700", marginTop: 8 },
+  stateSubtitle: { fontSize: 14, textAlign: "center" },
+
+  textPrimaryLight:   { color: COLORS.textLightPrimary   },
   textSecondaryLight: { color: COLORS.textLightSecondary },
-  textPrimaryDark: { color: COLORS.textDarkPrimary },
-  textSecondaryDark: { color: COLORS.textDarkSecondary },
+  textPrimaryDark:    { color: COLORS.textDarkPrimary    },
+  textSecondaryDark:  { color: COLORS.textDarkSecondary  },
 });
 
 export default HistoryScreen;

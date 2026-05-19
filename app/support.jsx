@@ -9,7 +9,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from "../context";
 
 const COLORS = {
@@ -28,7 +27,7 @@ const COLORS = {
   gray800: "#1F2937",
 };
 
-const SupportScreen = () => {
+const SupportScreen = ({ setActiveTab }) => {
   const { isDarkMode } = useTheme();
   const [openItem, setOpenItem] = useState(null);
 
@@ -93,11 +92,11 @@ const SupportScreen = () => {
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, bgStyle]}>
+    <View style={[styles.safeArea, bgStyle]}>
       <View style={[styles.header, { backgroundColor: headerBg }]}>
         <TouchableOpacity
           style={styles.headerIconButton}
-          onPress={() => router.push("/dashboard")}
+          onPress={() => setActiveTab("dashboard")}
           activeOpacity={0.8}
         >
           <MaterialIcons
@@ -212,49 +211,7 @@ const SupportScreen = () => {
           })}
         </View>
       </ScrollView>
-
-      <View
-        style={[
-          styles.bottomNav,
-          {
-            backgroundColor: isDarkMode
-              ? COLORS.backgroundDark
-              : COLORS.backgroundLight,
-            borderTopColor: borderColor,
-          },
-        ]}
-      >
-        {[
-          { icon: "dashboard", label: "Dashboard", route: "/dashboard" },
-          { icon: "message", label: "Messages", route: "/messages" },
-          { icon: "history", label: "History", route: "/history" },
-          { icon: "support-agent", label: "Support", active: true, route: "/support" },
-        ].map((item, index) => (
-          <TouchableOpacity
-            key={index}
-            style={styles.navItem}
-            activeOpacity={0.8}
-            onPress={() => router.push(item.route)}
-          >
-            <MaterialIcons
-              name={item.icon}
-              size={24}
-              color={item.active ? COLORS.accentBlue : textSecondary.color}
-            />
-            <Text
-              style={[
-                styles.navLabel,
-                {
-                  color: item.active ? COLORS.accentBlue : textSecondary.color,
-                },
-              ]}
-            >
-              {item.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </SafeAreaView>
+    </View>
   );
 };
 
@@ -358,26 +315,6 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 14,
     fontWeight: "700",
-  },
-  bottomNav: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 80,
-    flexDirection: "row",
-    justifyContent: "space-around",
-    alignItems: "center",
-    borderTopWidth: 1,
-  },
-  navItem: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  navLabel: {
-    fontSize: 12,
-    fontWeight: "500",
-    marginTop: 2,
   },
   textPrimaryLight: { color: COLORS.textLightPrimary },
   textSecondaryLight: { color: COLORS.textLightSecondary },

@@ -63,6 +63,7 @@ const MultiStepRegistrationScreen = () => {
   // --- Identity State ---
   const [fullName, setFullName] = useState('');
   const [address, setAddress] = useState('');
+  const [city, setCity] = useState('');
   const [profileImage, setProfileImage] = useState(null);
   const [dob, setDob] = useState(new Date());
   const [isOver18, setIsOver18] = useState(false);
@@ -121,6 +122,7 @@ const MultiStepRegistrationScreen = () => {
     if (!gender) newErrors.gender = "Gender is required";
     if (isNaN(phoneNumber) || phoneNumber.length < 10) newErrors.phoneNumber = "Valid 10-digit phone number required";
     if (!address.trim()) newErrors.address = "Address is required";
+    if (!city.trim()) newErrors.city = "City is required";
     if (!idFront || !idBack) newErrors.id = "Both front and back ID photos are required";
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -269,6 +271,7 @@ const MultiStepRegistrationScreen = () => {
             id: authUser.id, // The link between Auth and Database
             full_name: fullName,
             address: address,
+            city: city,
             dob: dob.toISOString().split('T')[0],
             gender: gender,
             role: role,
@@ -578,7 +581,7 @@ const MultiStepRegistrationScreen = () => {
                 <View style={[styles.inputContainer, borderStyle, inputBgStyle, errors.address && styles.inputError]}>
                   <MaterialIcons name="location-on" size={20} color={COLORS.textSecondaryLight} style={styles.inputIconLeft} />
                   <TextInput 
-                    placeholder="Street address, Apt, City" 
+                    placeholder="Street address, Apt" 
                     placeholderTextColor={isDarkMode ? COLORS.textSecondaryDark : COLORS.textSecondaryLight}
                     style={[styles.textInput, textPrimary]}
                     value={address}
@@ -586,6 +589,21 @@ const MultiStepRegistrationScreen = () => {
                   />
                 </View>
                 {errors.address && <Text style={styles.errorText}>{errors.address}</Text>}
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, textSecondary]}>CITY</Text>
+                <View style={[styles.inputContainer, borderStyle, inputBgStyle, errors.city && styles.inputError]}>
+                  <MaterialIcons name="location-city" size={20} color={COLORS.textSecondaryLight} style={styles.inputIconLeft} />
+                  <TextInput 
+                    placeholder="Ex. Lahore" 
+                    placeholderTextColor={isDarkMode ? COLORS.textSecondaryDark : COLORS.textSecondaryLight}
+                    style={[styles.textInput, textPrimary]}
+                    value={city}
+                    onChangeText={setCity}
+                  />
+                </View>
+                {errors.city && <Text style={styles.errorText}>{errors.city}</Text>}
               </View>
             </View>
 

@@ -104,16 +104,18 @@ const ProfileScreen = () => {
           finalProfileImage = dbUser.profile_image_url;
         }
       } else if (dbUser?.full_name) {
-        const fileName = `${user.id}_${dbUser.full_name}.png`;
-        const { data: urlData } = supabase.storage
-          .from("profiles")
-          .getPublicUrl(`${user.id}/${fileName}`);
+          const fileName = `${user.id}_${dbUser.full_name}.png`;
+          const { data: urlData } = supabase.storage
+            .from("profiles")
+            .getPublicUrl(`${user.id}/${fileName}`);
 
-        if (urlData?.publicUrl) {
-          finalProfileImage =
-            (await cacheProfileImage(urlData.publicUrl, user.id)) || urlData.publicUrl;
+          // getPublicUrl returns { data: { publicUrl } } — guard before using
+          const publicUrl = urlData?.publicUrl;
+          if (publicUrl) {
+            finalProfileImage =
+              (await cacheProfileImage(publicUrl, user.id)) || publicUrl;
+          }
         }
-      }
 
       const updatedProfile = { ...dbUser, local_image_uri: finalProfileImage };
       await saveLocalProfile(updatedProfile);
@@ -170,7 +172,7 @@ const ProfileScreen = () => {
   const profileRows = [
     { label: "Full Name", value: userData?.full_name || "N/A" },
     { label: "Blood Type", value: userData?.blood_type || "N/A" },
-    { label: "Phone", value: `+92 ${userData?.phone_number}` || "N/A" },
+    { label: "Phone", value: userData?.phone_number ? `+92 ${userData.phone_number}` : "N/A" },
     { label: "Address", value: userData?.address || "N/A" },
     { label: "Email", value: userData?.email || "N/A" },
   ];
@@ -221,7 +223,7 @@ const ProfileScreen = () => {
         </View>
 
         {/* ── Impact Stats ──────────────────────────────────────────────────── */}
-        <StatsSection isDarkMode={isDarkMode} userData={userData} />
+        {isDonor && <StatsSection isDarkMode={isDarkMode} userData={userData} />}
 
         {/* ── Personal Information ──────────────────────────────────────────── */}
         <View style={styles.section}>
@@ -332,19 +334,19 @@ const ProfileScreen = () => {
                 iconColor: "#3B82F6",
                 label: "Help & Support",
                 subtitle: "FAQs, contact us",
-                onPress: () => router.push("/support"),
+                onPress: () => router.push({ pathname: "/main", params: { tab: "support" } }),
               },
               {
                 icon: "description",
                 iconColor: "#8B5CF6",
                 label: "Terms of Service",
-                onPress: () => Linking.openURL("https://yourapp.com/terms"),
+                onPress: () => Linking.openURL("https://bloodhive.com/terms"),
               },
               {
                 icon: "shield",
                 iconColor: "#10B981",
                 label: "Privacy Policy",
-                onPress: () => Linking.openURL("https://yourapp.com/privacy"),
+                onPress: () => Linking.openURL("https://bloodhive.com/privacy"),
               },
               {
                 icon: "info-outline",

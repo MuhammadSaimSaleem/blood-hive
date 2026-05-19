@@ -66,6 +66,27 @@ const mapDbRowToState = (row) => ({
   requestLabel: row.request_id ?? row.id,
 });
 
+const NOTIF_TYPE_META = {
+  blood_request:    { icon: "favorite",              color: "#D42B1F" },
+  donation_match:   { icon: "person-add",            color: "#7ED321" },
+  donor_registered: { icon: "person-add",            color: "#7ED321" },
+  hospital_update:  { icon: "local-hospital",        color: "#1976D2" },
+  urgent_request:   { icon: "notification-important",color: "#F57C00" },
+  reminder:         { icon: "alarm",                 color: "#7B1FA2" },
+  donors_found:     { icon: "location-on",           color: "#7ED321" },
+  donation_saved:   { icon: "volunteer-activism",    color: "#7ED321" },
+};
+
+const formatNotifTime = (isoString) => {
+  const diff = Date.now() - new Date(isoString).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1)   return "Just now";
+  if (mins < 60)  return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)   return `${hrs}h`;
+  return `${Math.floor(hrs / 24)}d`;
+};
+
 const RecipientDashboard = ({
   isDarkMode,
   surface,
@@ -80,7 +101,8 @@ const RecipientDashboard = ({
   const [isNotifModalVisible, setNotifModalVisible] = useState(false);
   const [isHistoryModalVisible, setHistoryModalVisible] = useState(false);
   const [isBanksModalVisible, setBanksModalVisible] = useState(false);
-  const [unreadNotifs, setUnreadNotifs] = useState(3);
+  const [unreadNotifs, setUnreadNotifs] = useState(0);
+  const [dashNotifications, setDashNotifications] = useState([]);
   const [selectedBloodType, setSelectedBloodType] = useState("O+");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -139,14 +161,6 @@ const RecipientDashboard = ({
     { name: "LifeStream Bank", distance: "2.1 km", available: true },
     { name: "RedCross Unit", distance: "3.4 km", available: false },
     { name: "Hope Blood Bank", distance: "5.0 km", available: true },
-  ];
-
-  const notifications = [
-    { icon: "person-add", title: "New Donor Matched", subtitle: "Ahmed Raza (O+) is 1.2 km away", time: "2m", color: COLORS.accentGreen },
-    { icon: "local-hospital", title: "Blood Bank Update", subtitle: "City Blood Centre has O+ in stock", time: "18m", color: COLORS.accentBlue },
-    { icon: "warning", title: "Urgency Alert", subtitle: "Your request is marked High urgency", time: "1h", color: COLORS.accentOrange },
-    { icon: "check-circle", title: "Unit Confirmed", subtitle: "1 unit of O+ confirmed from donor", time: "2h", color: COLORS.accentGreen },
-    { icon: "info", title: "Request Broadcast", subtitle: "42 donors have been notified", time: "3h", color: COLORS.accentBlue },
   ];
 
   const handleCompleteRequest = useCallback(async () => {
@@ -260,9 +274,14 @@ const RecipientDashboard = ({
     useCallback(() => {
       if (!userId) return;
 
-      const fetchActiveRequest = async () => {
+      let channel = null;
+      let notifsChannel = null;
+      let cancelled = false; // ← FIX: cancellation flag to handle async race conditions
+
+      const run = async () => {
         setIsLoading(true);
         try {
+          // ── Fetch active blood request ──────────────────────────────────
           const { data, error } = await supabase
             .from("blood_requests")
             .select("*")
@@ -272,6 +291,9 @@ const RecipientDashboard = ({
             .limit(1)
             .maybeSingle();
 
+          // ← FIX: bail out if cleanup already ran while we were awaiting
+          if (cancelled) return;
+
           if (error) {
             console.error("Error fetching active request:", error.message);
             setCurrentRequestActive(false);
@@ -280,15 +302,44 @@ const RecipientDashboard = ({
 
           if (data) {
             setCurrentRequestActive(true);
-            const mapped = mapDbRowToState(data);
-            setRecipientData(mapped);
+            setRecipientData(mapDbRowToState(data));
             setEditUnits(String(data.units_required ?? 1));
             setEditUnitsFound(String(data.units_found ?? 0));
             setSelectedBloodType(data.blood_type ?? "O+");
+
+            // ← FIX: only create the channel if we haven't been cancelled,
+            //   then await subscribe() so the channel is fully ready before
+            //   it could be cleaned up or reused.
+            if (!cancelled) {
+              channel = supabase
+                .channel(`blood_request:${data.id}`)
+                .on(
+                  "postgres_changes",
+                  {
+                    event: "UPDATE",
+                    schema: "public",
+                    table: "blood_requests",
+                    filter: `id=eq.${data.id}`,
+                  },
+                  (payload) => {
+                    const u = payload.new;
+                    setRecipientData((prev) => ({
+                      ...prev,
+                      unitsFound: u.units_found ?? prev.unitsFound,
+                      unitsRequired: u.units_required ?? prev.unitsRequired,
+                      status: u.status ?? prev.status,
+                      isCompleted: u.is_completed ?? prev.isCompleted,
+                      isDeleted: u.is_deleted ?? prev.isDeleted,
+                    }));
+                  }
+                );
+              await channel.subscribe(); // ← FIX: await so subscribe fully completes
+            }
           } else {
             setCurrentRequestActive(false);
           }
 
+          // ── Fetch request history ───────────────────────────────────────
           const { data: historyData, error: historyError } = await supabase
             .from("blood_requests")
             .select("id, request_id, blood_type, units_required, created_at, status")
@@ -296,6 +347,9 @@ const RecipientDashboard = ({
             .in("status", ["completed", "cancelled"])
             .order("created_at", { ascending: false })
             .limit(10);
+
+          // ← FIX: bail out if cleanup ran during history fetch
+          if (cancelled) return;
 
           if (historyError) {
             console.error("Error fetching history:", historyError.message);
@@ -315,46 +369,85 @@ const RecipientDashboard = ({
               }))
             );
           }
+
+          // ── Fetch recent notifications for bell badge + modal ───────────
+          const { data: notifsData, error: notifsError } = await supabase
+            .from("notifications")
+            .select("id, type, title, body, is_read, created_at, data")
+            .eq("user_id", userId)
+            .order("created_at", { ascending: false })
+            .limit(20);
+
+          // ← FIX: bail out if cleanup ran during notifications fetch
+          if (cancelled) return;
+
+          if (!notifsError && notifsData) {
+            const mapped = notifsData.map((row) => ({
+              id:       row.id,
+              icon:     NOTIF_TYPE_META[row.type]?.icon ?? "notifications",
+              color:    NOTIF_TYPE_META[row.type]?.color ?? COLORS.accentBlue,
+              title:    row.title,
+              subtitle: row.body,
+              time:     formatNotifTime(row.created_at),
+              is_read:  row.is_read,
+            }));
+            setDashNotifications(mapped);
+            setUnreadNotifs(mapped.filter((n) => !n.is_read).length);
+
+            // ← FIX: only create notifsChannel if we haven't been cancelled,
+            //   then await subscribe() — this is the channel that was throwing
+            //   the "cannot add postgres_changes callbacks after subscribe()" error.
+            if (!cancelled) {
+              notifsChannel = supabase
+                .channel(`dash_notifications:${userId}`)
+                .on(
+                  "postgres_changes",
+                  {
+                    event: "INSERT",
+                    schema: "public",
+                    table: "notifications",
+                    filter: `user_id=eq.${userId}`,
+                  },
+                  (payload) => {
+                    const r = payload.new;
+                    const item = {
+                      id:       r.id,
+                      icon:     NOTIF_TYPE_META[r.type]?.icon ?? "notifications",
+                      color:    NOTIF_TYPE_META[r.type]?.color ?? COLORS.accentBlue,
+                      title:    r.title,
+                      subtitle: r.body,
+                      time:     formatNotifTime(r.created_at),
+                      is_read:  r.is_read,
+                    };
+                    setDashNotifications((prev) => [item, ...prev].slice(0, 20));
+                    setUnreadNotifs((prev) => prev + (r.is_read ? 0 : 1));
+                  }
+                );
+              await notifsChannel.subscribe(); // ← FIX: await so subscribe fully completes
+            }
+          }
         } finally {
-          setIsLoading(false);
+          // ← FIX: only update loading state if we're still the active run
+          if (!cancelled) setIsLoading(false);
         }
       };
 
-      fetchActiveRequest();
+      run();
+
+      // Cleanup runs when screen loses focus — guaranteed single teardown point
+      return () => {
+        cancelled = true; // ← FIX: signal all in-flight async work to bail out immediately
+        if (channel) {
+          supabase.removeChannel(channel);
+          channel = null;
+        }
+        if (notifsChannel) {
+          supabase.removeChannel(notifsChannel);
+          notifsChannel = null;
+        }
+      };
     }, [userId, setCurrentRequestActive])
   );
-
-  useEffect(() => {
-    if (!userId || !recipientData.requestId) return;
-
-    const channel = supabase
-      .channel(`blood_request:${recipientData.requestId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "blood_requests",
-          filter: `id=eq.${recipientData.requestId}`,
-        },
-        (payload) => {
-          const u = payload.new;
-          setRecipientData((prev) => ({
-            ...prev,
-            unitsFound: u.units_found ?? prev.unitsFound,
-            unitsRequired: u.units_required ?? prev.unitsRequired,
-            status: u.status ?? prev.status,
-            isCompleted: u.is_completed ?? prev.isCompleted,
-            isDeleted: u.is_deleted ?? prev.isDeleted,
-          }));
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [userId, recipientData.requestId]);
 
   return (
     <>
@@ -421,9 +514,17 @@ const RecipientDashboard = ({
                   
                   <TouchableOpacity
                     style={styles.notifBell}
-                    onPress={() => {
+                    onPress={async () => {
                       setUnreadNotifs(0);
+                      setDashNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
                       setNotifModalVisible(true);
+                      if (userId) {
+                        await supabase
+                          .from("notifications")
+                          .update({ is_read: true })
+                          .eq("user_id", userId)
+                          .eq("is_read", false);
+                      }
                     }}
                   >
                     <MaterialIcons
@@ -973,9 +1074,15 @@ const RecipientDashboard = ({
               </TouchableOpacity>
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
-              {notifications.map((n, i) => (
-                <NotificationItem key={i} {...n} isDarkMode={isDarkMode} />
-              ))}
+              {dashNotifications.length === 0 ? (
+                <Text style={[{ textAlign: "center", marginTop: 20, fontSize: 14 }, textSecondary]}>
+                  No notifications yet.
+                </Text>
+              ) : (
+                dashNotifications.map((n, i) => (
+                  <NotificationItem key={n.id ?? i} {...n} isDarkMode={isDarkMode} />
+                ))
+              )}
             </ScrollView>
           </View>
         </View>

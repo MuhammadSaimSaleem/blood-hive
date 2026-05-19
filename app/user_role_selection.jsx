@@ -118,11 +118,6 @@ const RoleSelectionScreen = () => {
               Already have an account? Log In
             </Text>
           </TouchableOpacity>
-
-          {/* Added For Now */}
-          <TouchableOpacity onPress={() => router.push('/dashboard')}>
-            <Text style={[styles.loginLink, loginLinkStyle]}>Admin Button</Text>
-          </TouchableOpacity>
         </View>
       </View>
     </SafeAreaView>

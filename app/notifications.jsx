@@ -1,7 +1,8 @@
 import { MaterialIcons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   ScrollView,
   StyleSheet,
@@ -11,6 +12,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from "../context";
+import { supabase } from "../lib";
 
 const COLORS = {
   primary: "#D0021B",
@@ -33,84 +35,125 @@ const FILTER_TABS = [
   { key: "request", label: "Requests" },
 ];
 
-const INITIAL_NOTIFICATIONS = [
-  {
-    id: 1,
-    title: "3 nearby donors found",
-    message: "We found 3 A+ donors within 5 km of your location.",
-    time: "2 min ago",
-    timestamp: Date.now() - 2 * 60 * 1000,
-    icon: "location-on",
-    unread: true,
-    category: "donor",
-  },
-  {
-    id: 2,
-    title: "Blood request accepted",
-    message: "A donor has responded to your urgent blood request.",
-    time: "12 min ago",
-    timestamp: Date.now() - 12 * 60 * 1000,
-    icon: "favorite",
-    unread: true,
-    category: "request",
-  },
-  {
-    id: 3,
-    title: "Hospital updated request",
-    message: "City Hospital updated the request priority to urgent.",
-    time: "30 min ago",
-    timestamp: Date.now() - 30 * 60 * 1000,
-    icon: "local-hospital",
-    unread: false,
-    category: "hospital",
-  },
-  {
-    id: 4,
-    title: "New donor registered nearby",
-    message: "A B- donor just registered 3 km from your location.",
-    time: "1 hr ago",
-    timestamp: Date.now() - 60 * 60 * 1000,
-    icon: "person-add",
-    unread: false,
-    category: "donor",
-  },
-  {
-    id: 5,
-    title: "Urgent request from hospital",
-    message: "General Hospital needs O- blood urgently. Tap to respond.",
-    time: "2 hrs ago",
-    timestamp: Date.now() - 2 * 60 * 60 * 1000,
-    icon: "notification-important",
-    unread: true,
-    category: "hospital",
-  },
-  {
-    id: 6,
-    title: "Your donation saved a life",
-    message: "The patient at City Hospital has recovered. Thank you!",
-    time: "Yesterday",
-    timestamp: Date.now() - 24 * 60 * 60 * 1000,
-    icon: "volunteer-activism",
-    unread: false,
-    category: "request",
-  },
-];
+// Maps notification `type` from DB to an icon name and filter category
+const TYPE_META = {
+  blood_request:    { icon: "favorite",               category: "request"  },
+  donation_match:   { icon: "person-add",              category: "donor"    },
+  donor_registered: { icon: "person-add",              category: "donor"    },
+  hospital_update:  { icon: "local-hospital",          category: "hospital" },
+  urgent_request:   { icon: "notification-important",  category: "hospital" },
+  reminder:         { icon: "alarm",                   category: "request"  },
+  donors_found:     { icon: "location-on",             category: "donor"    },
+  donation_saved:   { icon: "volunteer-activism",      category: "request"  },
+};
+
+const DEFAULT_META = { icon: "notifications", category: "request" };
+
+const formatTime = (isoString) => {
+  const diff = Date.now() - new Date(isoString).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1)   return "Just now";
+  if (mins < 60)  return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)   return `${hrs} hr${hrs > 1 ? "s" : ""} ago`;
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return "Yesterday";
+  return `${days} days ago`;
+};
+
+const mapDbRow = (row) => {
+  const meta = TYPE_META[row.type] ?? DEFAULT_META;
+  return {
+    id:        row.id,
+    title:     row.title,
+    message:   row.body,
+    time:      formatTime(row.created_at),
+    timestamp: new Date(row.created_at).getTime(),
+    icon:      meta.icon,
+    unread:    !row.is_read,
+    category:  meta.category,
+    type:      row.type,
+    data:      row.data ?? {},
+  };
+};
 
 const NotificationsScreen = () => {
   const { isDarkMode } = useTheme();
 
-  const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
-  const [activeFilter, setActiveFilter] = useState("all");
+  const [notifications, setNotifications] = useState([]);
+  const [userId, setUserId]               = useState(null);
+  const [isLoading, setIsLoading]         = useState(true);
+  const [activeFilter, setActiveFilter]   = useState("all");
   const [selectionMode, setSelectionMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [selectedIds, setSelectedIds]     = useState(new Set());
 
-  const bgStyle = isDarkMode ? styles.darkContainer : styles.lightContainer;
-  const textPrimary = isDarkMode ? styles.textPrimaryDark : styles.textPrimaryLight;
-  const textSecondary = isDarkMode ? styles.textSecondaryDark : styles.textSecondaryLight;
-  const surface = isDarkMode ? COLORS.surfaceDark : COLORS.surfaceLight;
-  const headerBg = isDarkMode ? COLORS.backgroundDark : COLORS.backgroundLight;
-  const filterBg = isDarkMode ? COLORS.backgroundDark : COLORS.backgroundLight;
-  const filterBorderColor = isDarkMode ? "#2C2C2E" : "#E5E5EA";
+  const bgStyle          = isDarkMode ? styles.darkContainer   : styles.lightContainer;
+  const textPrimary      = isDarkMode ? styles.textPrimaryDark  : styles.textPrimaryLight;
+  const textSecondary    = isDarkMode ? styles.textSecondaryDark: styles.textSecondaryLight;
+  const surface          = isDarkMode ? COLORS.surfaceDark      : COLORS.surfaceLight;
+  const headerBg         = isDarkMode ? COLORS.backgroundDark   : COLORS.backgroundLight;
+  const filterBg         = isDarkMode ? COLORS.backgroundDark   : COLORS.backgroundLight;
+  const filterBorderColor= isDarkMode ? "#2C2C2E"               : "#E5E5EA";
+
+  // ─── Fetch session + notifications, subscribe to realtime inserts ────────────
+  useFocusEffect(
+    useCallback(() => {
+      let channel = null;
+
+      const init = async () => {
+        setIsLoading(true);
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (!session) return;
+
+          const uid = session.user.id;
+          setUserId(uid);
+
+          const { data, error } = await supabase
+            .from("notifications")
+            .select("*")
+            .eq("user_id", uid)
+            .order("created_at", { ascending: false })
+            .limit(50);
+
+          if (error) {
+            console.error("Failed to fetch notifications:", error.message);
+            return;
+          }
+
+          setNotifications((data ?? []).map(mapDbRow));
+
+          // Realtime: listen for new INSERT rows for this user
+          channel = supabase
+            .channel(`notifications:${uid}`)
+            .on(
+              "postgres_changes",
+              {
+                event: "INSERT",
+                schema: "public",
+                table: "notifications",
+                filter: `user_id=eq.${uid}`,
+              },
+              (payload) => {
+                setNotifications((prev) => [mapDbRow(payload.new), ...prev]);
+              }
+            )
+            .subscribe();
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      init();
+
+      return () => {
+        if (channel) {
+          supabase.removeChannel(channel);
+          channel = null;
+        }
+      };
+    }, [])
+  );
 
   const unreadCount = useMemo(
     () => notifications.filter((n) => n.unread).length,
@@ -118,25 +161,46 @@ const NotificationsScreen = () => {
   );
 
   const filteredNotifications = useMemo(() => {
-    if (activeFilter === "all") return notifications;
+    if (activeFilter === "all")    return notifications;
     if (activeFilter === "unread") return notifications.filter((n) => n.unread);
     return notifications.filter((n) => n.category === activeFilter);
   }, [notifications, activeFilter]);
 
-  const markAllRead = useCallback(() => {
+  // ─── Mark all read ────────────────────────────────────────────────────────────
+  const markAllRead = useCallback(async () => {
+    if (!userId) return;
     setNotifications((prev) => prev.map((n) => ({ ...n, unread: false })));
-  }, []);
+    const { error } = await supabase
+      .from("notifications")
+      .update({ is_read: true })
+      .eq("user_id", userId)
+      .eq("is_read", false);
+    if (error) console.error("markAllRead error:", error.message);
+  }, [userId]);
 
-  const markAsRead = useCallback((id) => {
+  // ─── Mark single read ─────────────────────────────────────────────────────────
+  const markAsRead = useCallback(async (id) => {
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, unread: false } : n))
     );
+    const { error } = await supabase
+      .from("notifications")
+      .update({ is_read: true })
+      .eq("id", id);
+    if (error) console.error("markAsRead error:", error.message);
   }, []);
 
-  const deleteNotification = useCallback((id) => {
+  // ─── Delete single ────────────────────────────────────────────────────────────
+  const deleteNotification = useCallback(async (id) => {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
+    const { error } = await supabase
+      .from("notifications")
+      .delete()
+      .eq("id", id);
+    if (error) console.error("deleteNotification error:", error.message);
   }, []);
 
+  // ─── Selection helpers ────────────────────────────────────────────────────────
   const toggleSelect = useCallback((id) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -146,21 +210,19 @@ const NotificationsScreen = () => {
     });
   }, []);
 
-  const handleLongPress = useCallback(
-    (id) => {
-      if (!selectionMode) {
-        setSelectionMode(true);
-        setSelectedIds(new Set([id]));
-      }
-    },
-    [selectionMode]
-  );
+  const handleLongPress = useCallback((id) => {
+    if (!selectionMode) {
+      setSelectionMode(true);
+      setSelectedIds(new Set([id]));
+    }
+  }, [selectionMode]);
 
   const cancelSelection = useCallback(() => {
     setSelectionMode(false);
     setSelectedIds(new Set());
   }, []);
 
+  // ─── Delete selected ─────────────────────────────────────────────────────────
   const deleteSelected = useCallback(() => {
     Alert.alert(
       "Delete Notifications",
@@ -170,37 +232,41 @@ const NotificationsScreen = () => {
         {
           text: "Delete",
           style: "destructive",
-          onPress: () => {
-            setNotifications((prev) =>
-              prev.filter((n) => !selectedIds.has(n.id))
-            );
+          onPress: async () => {
+            const ids = [...selectedIds];
+            setNotifications((prev) => prev.filter((n) => !selectedIds.has(n.id)));
             cancelSelection();
+            const { error } = await supabase
+              .from("notifications")
+              .delete()
+              .in("id", ids);
+            if (error) console.error("deleteSelected error:", error.message);
           },
         },
       ]
     );
   }, [selectedIds, cancelSelection]);
 
-  const markSelectedRead = useCallback(() => {
+  // ─── Mark selected read ───────────────────────────────────────────────────────
+  const markSelectedRead = useCallback(async () => {
+    const ids = [...selectedIds];
     setNotifications((prev) =>
-      prev.map((n) =>
-        selectedIds.has(n.id) ? { ...n, unread: false } : n
-      )
+      prev.map((n) => selectedIds.has(n.id) ? { ...n, unread: false } : n)
     );
     cancelSelection();
+    const { error } = await supabase
+      .from("notifications")
+      .update({ is_read: true })
+      .in("id", ids);
+    if (error) console.error("markSelectedRead error:", error.message);
   }, [selectedIds, cancelSelection]);
 
-  const handleCardPress = useCallback(
-    (item) => {
-      if (selectionMode) {
-        toggleSelect(item.id);
-      } else {
-        markAsRead(item.id);
-      }
-    },
-    [selectionMode, toggleSelect, markAsRead]
-  );
+  const handleCardPress = useCallback((item) => {
+    if (selectionMode) toggleSelect(item.id);
+    else markAsRead(item.id);
+  }, [selectionMode, toggleSelect, markAsRead]);
 
+  // ─── Clear all ────────────────────────────────────────────────────────────────
   const clearAll = useCallback(() => {
     Alert.alert(
       "Clear All Notifications",
@@ -210,11 +276,19 @@ const NotificationsScreen = () => {
         {
           text: "Clear All",
           style: "destructive",
-          onPress: () => setNotifications([]),
+          onPress: async () => {
+            if (!userId) return;
+            setNotifications([]);
+            const { error } = await supabase
+              .from("notifications")
+              .delete()
+              .eq("user_id", userId);
+            if (error) console.error("clearAll error:", error.message);
+          },
         },
       ]
     );
-  }, []);
+  }, [userId]);
 
   return (
     <SafeAreaView style={[styles.safeArea, bgStyle]}>
@@ -332,16 +406,11 @@ const NotificationsScreen = () => {
       {/* BODY */}
       <ScrollView contentContainerStyle={{ paddingBottom: 120 }}>
         <View style={styles.section}>
-          <Text style={[styles.bigTitle, textPrimary]}>
-            Recent Notifications
-          </Text>
-          <Text style={[styles.subTitle, textSecondary]}>
-            Stay updated with donor matches and alerts
-          </Text>
-        </View>
-
-        <View style={styles.section}>
-          {filteredNotifications.length === 0 ? (
+          {isLoading ? (
+            <View style={styles.emptyState}>
+              <ActivityIndicator size="large" color={COLORS.accentBlue} />
+            </View>
+          ) : filteredNotifications.length === 0 ? (
             <View style={styles.emptyState}>
               <MaterialIcons
                 name="notifications-none"
@@ -488,7 +557,7 @@ const NotificationsScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, paddingTop: 30 },
+  safeArea: { flex: 1 },
 
   lightContainer: { backgroundColor: COLORS.backgroundLight },
   darkContainer: { backgroundColor: COLORS.backgroundDark },
