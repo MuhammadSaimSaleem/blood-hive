@@ -63,7 +63,7 @@ const LoginScreen = () => {
     } else {
       // Session is automatically saved to AsyncStorage by the Supabase Client
       setLoading(false);
-      router.replace('/dashboard');
+      router.replace('/main');
     }
   };
 

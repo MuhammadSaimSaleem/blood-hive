@@ -2,10 +2,13 @@ import { MaterialIcons } from "@expo/vector-icons";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   ImageBackground,
+  Linking,
   Modal,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -20,8 +23,12 @@ import {
   DonorActivityItem,
   NotificationItem,
   PulseDot,
-  QuickActionCard
+  QuickActionCard,
 } from "./UIComponents";
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CONSTANTS
+// ─────────────────────────────────────────────────────────────────────────────
 
 const COLORS = {
   primary: "#d42b1f",
@@ -52,9 +59,22 @@ const COMPATIBILITY_MAP = {
   "AB-": ["O-", "A-", "B-", "AB-"],
 };
 
+// Status display helpers for donor_responses
+const DONOR_STATUS_META = {
+  confirmed: { label: "Confirmed", color: COLORS.accentGreen },
+  pending:   { label: "Pending",   color: COLORS.accentOrange },
+  declined:  { label: "Declined",  color: COLORS.primary },
+  on_the_way:{ label: "On the Way",color: COLORS.accentBlue },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MAPPERS / HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
 const mapDbRowToState = (row) => ({
   bloodType: row.blood_type ?? "O+",
   hospital: row.hospital_name ?? "",
+  hospitalPhone: row.hospital_phone ?? null,
   unitsRequired: row.units_required ?? 1,
   unitsFound: row.units_found ?? 0,
   status: row.status ?? "active",
@@ -62,30 +82,46 @@ const mapDbRowToState = (row) => ({
   isDeleted: row.is_deleted ?? false,
   matches: row.matches ?? 0,
   nearbyBanks: row.nearby_banks ?? 0,
+  donorsNotified: row.donors_notified ?? 0,
   requestId: row.id,
   requestLabel: row.request_id ?? row.id,
 });
 
 const NOTIF_TYPE_META = {
-  blood_request:    { icon: "favorite",              color: "#D42B1F" },
-  donation_match:   { icon: "person-add",            color: "#7ED321" },
-  donor_registered: { icon: "person-add",            color: "#7ED321" },
-  hospital_update:  { icon: "local-hospital",        color: "#1976D2" },
-  urgent_request:   { icon: "notification-important",color: "#F57C00" },
-  reminder:         { icon: "alarm",                 color: "#7B1FA2" },
-  donors_found:     { icon: "location-on",           color: "#7ED321" },
-  donation_saved:   { icon: "volunteer-activism",    color: "#7ED321" },
+  blood_request:    { icon: "favorite",               color: "#D42B1F" },
+  donation_match:   { icon: "person-add",             color: "#7ED321" },
+  donor_registered: { icon: "person-add",             color: "#7ED321" },
+  hospital_update:  { icon: "local-hospital",         color: "#1976D2" },
+  urgent_request:   { icon: "notification-important", color: "#F57C00" },
+  reminder:         { icon: "alarm",                  color: "#7B1FA2" },
+  donors_found:     { icon: "location-on",            color: "#7ED321" },
+  donation_saved:   { icon: "volunteer-activism",     color: "#7ED321" },
 };
 
 const formatNotifTime = (isoString) => {
   const diff = Date.now() - new Date(isoString).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1)   return "Just now";
-  if (mins < 60)  return `${mins}m`;
+  if (mins < 1)  return "Just now";
+  if (mins < 60) return `${mins}m`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24)   return `${hrs}h`;
+  if (hrs < 24)  return `${hrs}h`;
   return `${Math.floor(hrs / 24)}d`;
 };
+
+const formatActivityTime = (isoString) => {
+  if (!isoString) return "";
+  const diff = Date.now() - new Date(isoString).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1)  return "Just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `${hrs} hr ago`;
+  return `${Math.floor(hrs / 24)} days ago`;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  COMPONENT
+// ─────────────────────────────────────────────────────────────────────────────
 
 const RecipientDashboard = ({
   isDarkMode,
@@ -96,19 +132,25 @@ const RecipientDashboard = ({
   setCurrentRequestActive,
   userId,
 }) => {
-  const [isEditModalVisible, setEditModalVisible] = useState(false);
-  const [isBloodTypeModalVisible, setBloodTypeModalVisible] = useState(false);
-  const [isNotifModalVisible, setNotifModalVisible] = useState(false);
-  const [isHistoryModalVisible, setHistoryModalVisible] = useState(false);
-  const [isBanksModalVisible, setBanksModalVisible] = useState(false);
-  const [unreadNotifs, setUnreadNotifs] = useState(0);
-  const [dashNotifications, setDashNotifications] = useState([]);
-  const [selectedBloodType, setSelectedBloodType] = useState("O+");
-  const [isLoading, setIsLoading] = useState(false);
+  // ── Modals ────────────────────────────────────────────────────────────────
+  const [isEditModalVisible,      setEditModalVisible]      = useState(false);
+  const [isBloodTypeModalVisible,  setBloodTypeModalVisible]  = useState(false);
+  const [isNotifModalVisible,      setNotifModalVisible]      = useState(false);
+  const [isHistoryModalVisible,    setHistoryModalVisible]    = useState(false);
+  const [isBanksModalVisible,      setBanksModalVisible]      = useState(false);
+  const [isDonorActivityModalVisible, setDonorActivityModalVisible] = useState(false);
 
-  const [recipientData, setRecipientData] = useState({
+  // ── Notification state ────────────────────────────────────────────────────
+  const [unreadNotifs,      setUnreadNotifs]      = useState(0);
+  const [dashNotifications, setDashNotifications] = useState([]);
+
+  // ── Request state ─────────────────────────────────────────────────────────
+  const [selectedBloodType, setSelectedBloodType] = useState("O+");
+  const [isLoading,         setIsLoading]         = useState(false);
+  const [recipientData,     setRecipientData]     = useState({
     bloodType: "N/A",
     hospital: "",
+    hospitalPhone: null,
     unitsRequired: 1,
     unitsFound: 0,
     status: "active",
@@ -116,13 +158,32 @@ const RecipientDashboard = ({
     isDeleted: false,
     matches: 0,
     nearbyBanks: 0,
+    donorsNotified: 0,
     requestId: null,
     requestLabel: null,
   });
-
-  const [editUnits, setEditUnits] = useState("1");
+  const [editUnits,      setEditUnits]      = useState("1");
   const [editUnitsFound, setEditUnitsFound] = useState("0");
   const [requestHistory, setRequestHistory] = useState([]);
+
+  // ── Donor Activity state ──────────────────────────────────────────────────
+  const [donorActivity,          setDonorActivity]          = useState([]);
+  const [donorActivityLoading,   setDonorActivityLoading]   = useState(false);
+  const [allDonorActivity,       setAllDonorActivity]       = useState([]);
+  const [donorActivityPage,      setDonorActivityPage]      = useState(0);
+  const [donorActivityHasMore,   setDonorActivityHasMore]   = useState(false);
+  const DONOR_PAGE_SIZE = 20;
+
+  // ── Blood Banks state ─────────────────────────────────────────────────────
+  const [bloodBanks,        setBloodBanks]        = useState([]);
+  const [bloodBanksLoading, setBloodBanksLoading] = useState(false);
+
+  // ── Share loading ─────────────────────────────────────────────────────────
+  const [isSharing, setIsSharing] = useState(false);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  DERIVED
+  // ─────────────────────────────────────────────────────────────────────────
 
   const progressPercentage =
     recipientData.unitsRequired > 0
@@ -132,11 +193,10 @@ const RecipientDashboard = ({
         )
       : 0;
 
-  const compatibleDonors =
-    COMPATIBILITY_MAP[recipientData.bloodType] ?? [];
+  const compatibleDonors = COMPATIBILITY_MAP[recipientData.bloodType] ?? [];
 
   const compatibilityRows = BLOOD_TYPES.map((bt) => {
-    const isUniversal = bt === "O-";
+    const isUniversal  = bt === "O-";
     const isCompatible = compatibleDonors.includes(bt);
     return {
       type: bt,
@@ -149,23 +209,12 @@ const RecipientDashboard = ({
     };
   });
 
-  const donorActivity = [
-    { name: "Ahmed Raza", time: "2 min ago", status: "Confirmed" },
-    { name: "Sara Malik", time: "15 min ago", status: "Pending" },
-    { name: "Usman Khan", time: "32 min ago", status: "Confirmed" },
-    { name: "Fatima Shah", time: "1 hr ago", status: "Declined" },
-  ];
-
-  const bloodBanks = [
-    { name: "City Blood Centre", distance: "0.8 km", available: true },
-    { name: "LifeStream Bank", distance: "2.1 km", available: true },
-    { name: "RedCross Unit", distance: "3.4 km", available: false },
-    { name: "Hope Blood Bank", distance: "5.0 km", available: true },
-  ];
+  // ─────────────────────────────────────────────────────────────────────────
+  //  HANDLERS — existing request management
+  // ─────────────────────────────────────────────────────────────────────────
 
   const handleCompleteRequest = useCallback(async () => {
     const unitsRequired = recipientData.unitsRequired ?? 1;
-
     setRecipientData((prev) => ({
       ...prev,
       status: "completed",
@@ -177,19 +226,12 @@ const RecipientDashboard = ({
     if (userId && recipientData.requestId) {
       const { error } = await supabase
         .from("blood_requests")
-        .update({
-          status: "completed",
-          is_completed: true,
-          units_found: unitsRequired,
-        })
+        .update({ status: "completed", is_completed: true, units_found: unitsRequired })
         .eq("id", recipientData.requestId)
         .eq("user_id", userId);
 
-      if (error) {
-        console.error("Failed to complete request:", error.message);
-      }
+      if (error) console.error("Failed to complete request:", error.message);
     }
-
     setTimeout(() => setCurrentRequestActive(false), 2000);
   }, [userId, recipientData.requestId, recipientData.unitsRequired, setCurrentRequestActive]);
 
@@ -198,7 +240,6 @@ const RecipientDashboard = ({
     setEditModalVisible(false);
 
     if (!userId || !recipientData.requestId) return;
-
     const { error } = await supabase
       .from("blood_requests")
       .update({ status: "deleted", is_deleted: true })
@@ -228,7 +269,6 @@ const RecipientDashboard = ({
     setEditModalVisible(false);
 
     if (!userId || !recipientData.requestId) return;
-
     const { error } = await supabase
       .from("blood_requests")
       .update({
@@ -253,6 +293,207 @@ const RecipientDashboard = ({
     recipientData.unitsFound,
   ]);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  //  HANDLER — Share Request (Quick Action)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const handleShareRequest = useCallback(async () => {
+    if (!recipientData.requestId) {
+      Alert.alert("No Active Request", "Create a blood request first.");
+      return;
+    }
+    setIsSharing(true);
+    try {
+      const message =
+        `🩸 URGENT: ${recipientData.bloodType} Blood Needed!\n\n` +
+        `Hospital: ${recipientData.hospital || "See request details"}\n` +
+        `Units Required: ${recipientData.unitsRequired}\n` +
+        `Units Found: ${recipientData.unitsFound}\n\n` +
+        `Request ID: ${recipientData.requestLabel ?? recipientData.requestId}\n\n` +
+        `If you can donate, please respond immediately. Every second counts. ❤️`;
+
+      await Share.share({ message, title: "Blood Donation Request" });
+
+      // Log share action in Supabase
+      if (userId) {
+        await supabase.from("request_share_logs").insert({
+          user_id: userId,
+          request_id: recipientData.requestId,
+          shared_at: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      console.log(err)
+    } finally {
+      setIsSharing(false);
+    }
+  }, [recipientData, userId]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  HANDLER — Call Hospital (Quick Action)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const handleCallHospital = useCallback(async () => {
+    const phone = recipientData.hospitalPhone;
+
+    if (!phone) {
+      Alert.alert(
+        "No Phone Number",
+        "No phone number is saved for this hospital. Would you like to add one?",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Edit Request",
+            onPress: () => {
+              setEditUnits(String(recipientData.unitsRequired ?? 1));
+              setEditUnitsFound(String(recipientData.unitsFound ?? 0));
+              setSelectedBloodType(recipientData.bloodType ?? "O+");
+              setEditModalVisible(true);
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    const url = `tel:${phone}`;
+    const supported = await Linking.canOpenURL(url);
+    if (supported) {
+      // Log call attempt
+      if (userId && recipientData.requestId) {
+        await supabase.from("hospital_call_logs").insert({
+          user_id: userId,
+          request_id: recipientData.requestId,
+          hospital_phone: phone,
+          called_at: new Date().toISOString(),
+        });
+      }
+      Linking.openURL(url);
+    } else {
+      Alert.alert("Cannot Call", "Your device does not support phone calls.");
+    }
+  }, [recipientData, userId]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  HANDLER — Fetch Nearby Blood Banks (Quick Action)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const fetchNearbyBanks = useCallback(async () => {
+    setBloodBanksLoading(true);
+    setBanksModalVisible(true);
+    try {
+      const { data, error } = await supabase
+        .from("blood_banks")
+        .select("id, name, distance_km, phone, address, is_available, available_units")
+        .order("distance_km", { ascending: true })
+        .limit(20);
+
+      if (error) {
+        console.error("Error fetching blood banks:", error.message);
+        Alert.alert("Error", "Could not load nearby blood banks.");
+        return;
+      }
+
+      setBloodBanks(
+        (data ?? []).map((b) => ({
+          id: b.id,
+          name: b.name,
+          distance: b.distance_km != null ? `${b.distance_km} km` : "N/A",
+          phone: b.phone,
+          address: b.address,
+          available: b.is_available ?? false,
+          availableUnits: b.available_units ?? 0,
+        }))
+      );
+    } finally {
+      setBloodBanksLoading(false);
+    }
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  HANDLER — Fetch Donor Activity (real-time from donor_responses table)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const fetchDonorActivity = useCallback(
+    async (requestId, page = 0, append = false) => {
+      if (!requestId) return;
+      setDonorActivityLoading(true);
+      try {
+        const from = page * DONOR_PAGE_SIZE;
+        const to   = from + DONOR_PAGE_SIZE - 1;
+
+        // Step 1: fetch donor_responses rows
+        const { data: responses, error, count } = await supabase
+          .from("donor_responses")
+          .select("id, status, responded_at, donor_id", { count: "exact" })
+          .eq("request_id", requestId)
+          .order("responded_at", { ascending: false })
+          .range(from, to);
+
+        if (error) {
+          console.error("Error fetching donor activity:", error.message);
+          return;
+        }
+
+        // Step 2: fetch user info for those donor_ids from public.users
+        const donorIds = (responses ?? []).map((r) => r.donor_id).filter(Boolean);
+        let profileMap = {};
+
+        if (donorIds.length > 0) {
+          const { data: users, error: usersErr } = await supabase
+            .from("users")
+            .select("id, full_name, blood_type, profile_image_url")
+            .in("id", donorIds);
+
+          if (usersErr) {
+            console.warn("Could not fetch donor users:", usersErr.message);
+          } else {
+            (users ?? []).forEach((u) => { profileMap[u.id] = u; });
+          }
+        }
+
+        const mapped = (responses ?? []).map((row) => {
+          const profile = profileMap[row.donor_id];
+          return {
+            id: row.id,
+            donorId: row.donor_id,
+            name: profile?.full_name ?? "Anonymous Donor",
+            bloodType: profile?.blood_type ?? "—",
+            avatarUrl: profile?.profile_image_url ?? null,
+            status: row.status ?? "pending",
+            statusLabel: DONOR_STATUS_META[row.status]?.label ?? row.status,
+            statusColor: DONOR_STATUS_META[row.status]?.color ?? "#888",
+            time: formatActivityTime(row.responded_at),
+            respondedAt: row.responded_at,
+          };
+        });
+
+        if (append) {
+          setAllDonorActivity((prev) => [...prev, ...mapped]);
+        } else {
+          setAllDonorActivity(mapped);
+          setDonorActivity(mapped.slice(0, 4)); // preview: top 4
+        }
+
+        setDonorActivityHasMore((count ?? 0) > (page + 1) * DONOR_PAGE_SIZE);
+        setDonorActivityPage(page);
+      } finally {
+        setDonorActivityLoading(false);
+      }
+    },
+    []
+  );
+
+  const handleLoadMoreDonors = useCallback(() => {
+    if (donorActivityHasMore && recipientData.requestId) {
+      fetchDonorActivity(recipientData.requestId, donorActivityPage + 1, true);
+    }
+  }, [donorActivityHasMore, donorActivityPage, recipientData.requestId, fetchDonorActivity]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  AUTO-COMPLETE WHEN UNITS FULFILLED
+  // ─────────────────────────────────────────────────────────────────────────
+
   useEffect(() => {
     if (
       currentRequestActive &&
@@ -270,18 +511,23 @@ const RecipientDashboard = ({
     handleCompleteRequest,
   ]);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  //  MAIN DATA FETCH + REALTIME SUBSCRIPTIONS
+  // ─────────────────────────────────────────────────────────────────────────
+
   useFocusEffect(
     useCallback(() => {
       if (!userId) return;
 
-      let channel = null;
-      let notifsChannel = null;
-      let cancelled = false; // ← FIX: cancellation flag to handle async race conditions
+      let channel        = null;
+      let notifsChannel  = null;
+      let donorChannel   = null;
+      let cancelled      = false;
 
       const run = async () => {
         setIsLoading(true);
         try {
-          // ── Fetch active blood request ──────────────────────────────────
+          // ── Active blood request ──────────────────────────────────────────
           const { data, error } = await supabase
             .from("blood_requests")
             .select("*")
@@ -291,7 +537,6 @@ const RecipientDashboard = ({
             .limit(1)
             .maybeSingle();
 
-          // ← FIX: bail out if cleanup already ran while we were awaiting
           if (cancelled) return;
 
           if (error) {
@@ -307,9 +552,10 @@ const RecipientDashboard = ({
             setEditUnitsFound(String(data.units_found ?? 0));
             setSelectedBloodType(data.blood_type ?? "O+");
 
-            // ← FIX: only create the channel if we haven't been cancelled,
-            //   then await subscribe() so the channel is fully ready before
-            //   it could be cleaned up or reused.
+            // Fetch donor activity for this request
+            if (!cancelled) fetchDonorActivity(data.id, 0, false);
+
+            // Realtime: blood_request updates
             if (!cancelled) {
               channel = supabase
                 .channel(`blood_request:${data.id}`)
@@ -325,21 +571,44 @@ const RecipientDashboard = ({
                     const u = payload.new;
                     setRecipientData((prev) => ({
                       ...prev,
-                      unitsFound: u.units_found ?? prev.unitsFound,
-                      unitsRequired: u.units_required ?? prev.unitsRequired,
-                      status: u.status ?? prev.status,
-                      isCompleted: u.is_completed ?? prev.isCompleted,
-                      isDeleted: u.is_deleted ?? prev.isDeleted,
+                      unitsFound:      u.units_found      ?? prev.unitsFound,
+                      unitsRequired:   u.units_required   ?? prev.unitsRequired,
+                      status:          u.status           ?? prev.status,
+                      isCompleted:     u.is_completed     ?? prev.isCompleted,
+                      isDeleted:       u.is_deleted       ?? prev.isDeleted,
+                      matches:         u.matches          ?? prev.matches,
+                      nearbyBanks:     u.nearby_banks     ?? prev.nearbyBanks,
+                      donorsNotified:  u.donors_notified  ?? prev.donorsNotified,
                     }));
                   }
                 );
-              await channel.subscribe(); // ← FIX: await so subscribe fully completes
+              await channel.subscribe();
+            }
+
+            // Realtime: donor_responses inserts & updates for this request
+            if (!cancelled) {
+              donorChannel = supabase
+                .channel(`donor_responses:${data.id}`)
+                .on(
+                  "postgres_changes",
+                  {
+                    event: "*",
+                    schema: "public",
+                    table: "donor_responses",
+                    filter: `request_id=eq.${data.id}`,
+                  },
+                  async (payload) => {
+                    // Re-fetch page 0 to get fresh data with joined profile names
+                    if (!cancelled) fetchDonorActivity(data.id, 0, false);
+                  }
+                );
+              await donorChannel.subscribe();
             }
           } else {
             setCurrentRequestActive(false);
           }
 
-          // ── Fetch request history ───────────────────────────────────────
+          // ── Request history ───────────────────────────────────────────────
           const { data: historyData, error: historyError } = await supabase
             .from("blood_requests")
             .select("id, request_id, blood_type, units_required, created_at, status")
@@ -348,18 +617,15 @@ const RecipientDashboard = ({
             .order("created_at", { ascending: false })
             .limit(10);
 
-          // ← FIX: bail out if cleanup ran during history fetch
           if (cancelled) return;
 
-          if (historyError) {
-            console.error("Error fetching history:", historyError.message);
-          } else if (historyData) {
+          if (!historyError && historyData) {
             setRequestHistory(
               historyData.map((row) => ({
-                id: row.id,
-                label: row.request_id ?? row.id,
+                id:        row.id,
+                label:     row.request_id ?? row.id,
                 bloodType: row.blood_type,
-                units: row.units_required,
+                units:     row.units_required,
                 date: new Date(row.created_at).toLocaleDateString("en-US", {
                   month: "short",
                   day: "2-digit",
@@ -370,7 +636,7 @@ const RecipientDashboard = ({
             );
           }
 
-          // ── Fetch recent notifications for bell badge + modal ───────────
+          // ── Notifications ─────────────────────────────────────────────────
           const { data: notifsData, error: notifsError } = await supabase
             .from("notifications")
             .select("id, type, title, body, is_read, created_at, data")
@@ -378,13 +644,12 @@ const RecipientDashboard = ({
             .order("created_at", { ascending: false })
             .limit(20);
 
-          // ← FIX: bail out if cleanup ran during notifications fetch
           if (cancelled) return;
 
           if (!notifsError && notifsData) {
             const mapped = notifsData.map((row) => ({
               id:       row.id,
-              icon:     NOTIF_TYPE_META[row.type]?.icon ?? "notifications",
+              icon:     NOTIF_TYPE_META[row.type]?.icon  ?? "notifications",
               color:    NOTIF_TYPE_META[row.type]?.color ?? COLORS.accentBlue,
               title:    row.title,
               subtitle: row.body,
@@ -394,9 +659,6 @@ const RecipientDashboard = ({
             setDashNotifications(mapped);
             setUnreadNotifs(mapped.filter((n) => !n.is_read).length);
 
-            // ← FIX: only create notifsChannel if we haven't been cancelled,
-            //   then await subscribe() — this is the channel that was throwing
-            //   the "cannot add postgres_changes callbacks after subscribe()" error.
             if (!cancelled) {
               notifsChannel = supabase
                 .channel(`dash_notifications:${userId}`)
@@ -409,10 +671,10 @@ const RecipientDashboard = ({
                     filter: `user_id=eq.${userId}`,
                   },
                   (payload) => {
-                    const r = payload.new;
+                    const r    = payload.new;
                     const item = {
                       id:       r.id,
-                      icon:     NOTIF_TYPE_META[r.type]?.icon ?? "notifications",
+                      icon:     NOTIF_TYPE_META[r.type]?.icon  ?? "notifications",
                       color:    NOTIF_TYPE_META[r.type]?.color ?? COLORS.accentBlue,
                       title:    r.title,
                       subtitle: r.body,
@@ -423,31 +685,28 @@ const RecipientDashboard = ({
                     setUnreadNotifs((prev) => prev + (r.is_read ? 0 : 1));
                   }
                 );
-              await notifsChannel.subscribe(); // ← FIX: await so subscribe fully completes
+              await notifsChannel.subscribe();
             }
           }
         } finally {
-          // ← FIX: only update loading state if we're still the active run
           if (!cancelled) setIsLoading(false);
         }
       };
 
       run();
 
-      // Cleanup runs when screen loses focus — guaranteed single teardown point
       return () => {
-        cancelled = true; // ← FIX: signal all in-flight async work to bail out immediately
-        if (channel) {
-          supabase.removeChannel(channel);
-          channel = null;
-        }
-        if (notifsChannel) {
-          supabase.removeChannel(notifsChannel);
-          notifsChannel = null;
-        }
+        cancelled = true;
+        if (channel)       { supabase.removeChannel(channel);       channel       = null; }
+        if (notifsChannel) { supabase.removeChannel(notifsChannel); notifsChannel = null; }
+        if (donorChannel)  { supabase.removeChannel(donorChannel);  donorChannel  = null; }
       };
     }, [userId, setCurrentRequestActive])
   );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  RENDER
+  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <>
@@ -478,7 +737,7 @@ const RecipientDashboard = ({
         </View>
       ) : (
         <>
-          {/* ── ACTIVE REQUEST CARD ─────────────────────────────────────── */}
+          {/* ── ACTIVE REQUEST CARD ──────────────────────────────────────── */}
           <View style={styles.section}>
             <View style={[styles.card, { backgroundColor: surface, padding: 20 }]}>
               {/* Header */}
@@ -503,20 +762,18 @@ const RecipientDashboard = ({
                 <View style={styles.headerRight}>
                   <View style={styles.liveRow}>
                     <PulseDot />
-                    <Text
-                      style={[
-                        styles.findingDonorsText,
-                      ]}
-                    >
+                    <Text style={styles.findingDonorsText}>
                       {recipientData.isCompleted ? "Completed" : "Finding Donors"}
                     </Text>
                   </View>
-                  
+
                   <TouchableOpacity
                     style={styles.notifBell}
                     onPress={async () => {
                       setUnreadNotifs(0);
-                      setDashNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+                      setDashNotifications((prev) =>
+                        prev.map((n) => ({ ...n, is_read: true }))
+                      );
                       setNotifModalVisible(true);
                       if (userId) {
                         await supabase
@@ -545,9 +802,6 @@ const RecipientDashboard = ({
                 </View>
               </View>
 
-              {/* Live row — PulseDot + "Finding Donors" */}
-              
-
               <Text style={[styles.mainTitle, textPrimary]}>
                 {recipientData.bloodType} Blood Needed
               </Text>
@@ -564,7 +818,9 @@ const RecipientDashboard = ({
                     isDarkMode ? { backgroundColor: COLORS.grayblue } : {},
                   ]}
                 >
-                  <Text style={styles.statNumberRed}>42</Text>
+                  <Text style={styles.statNumberRed}>
+                    {recipientData.donorsNotified || 0}
+                  </Text>
                   <Text style={styles.statLabelSmall}>DONORS NOTIFIED</Text>
                 </View>
                 <View
@@ -610,26 +866,30 @@ const RecipientDashboard = ({
             </View>
           </View>
 
-          {/* ── QUICK ACTIONS ───────────────────────────────────────────── */}
+          {/* ── QUICK ACTIONS ─────────────────────────────────────────────── */}
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, textPrimary]}>Quick Actions</Text>
             <View style={styles.quickActionsGrid}>
+
+              {/* Share Request */}
               <QuickActionCard
-                icon="share"
+                icon={isSharing ? "hourglass-empty" : "share"}
                 label="Share Request"
                 color={COLORS.accentBlue}
                 isDarkMode={isDarkMode}
-                onPress={() =>
-                  Alert.alert("Share", "Sharing your blood request with your contacts.")
-                }
+                onPress={handleShareRequest}
               />
+
+              {/* Nearby Banks — fetches from Supabase */}
               <QuickActionCard
                 icon="local-hospital"
                 label="Nearby Banks"
                 color={COLORS.primary}
                 isDarkMode={isDarkMode}
-                onPress={() => setBanksModalVisible(true)}
+                onPress={fetchNearbyBanks}
               />
+
+              {/* History */}
               <QuickActionCard
                 icon="history"
                 label="History"
@@ -637,34 +897,71 @@ const RecipientDashboard = ({
                 isDarkMode={isDarkMode}
                 onPress={() => setHistoryModalVisible(true)}
               />
+
+              {/* Call Hospital — uses hospital_phone from blood_requests */}
               <QuickActionCard
                 icon="call"
                 label="Call Hospital"
                 color={COLORS.accentGreen}
                 isDarkMode={isDarkMode}
-                onPress={() =>
-                  Alert.alert("Call", "Connecting to City General Hospital…")
-                }
+                onPress={handleCallHospital}
               />
             </View>
           </View>
 
-          {/* ── DONOR ACTIVITY ──────────────────────────────────────────── */}
+          {/* ── DONOR ACTIVITY ────────────────────────────────────────────── */}
           <View style={styles.section}>
             <View style={styles.sectionHeaderRow}>
               <Text style={[styles.sectionTitle, textPrimary]}>Donor Activity</Text>
-              <TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  setAllDonorActivity(donorActivity);
+                  setDonorActivityModalVisible(true);
+                  if (recipientData.requestId) {
+                    fetchDonorActivity(recipientData.requestId, 0, false);
+                  }
+                }}
+              >
                 <Text style={{ color: COLORS.primary, fontWeight: "700" }}>View All</Text>
               </TouchableOpacity>
             </View>
+
             <View style={[styles.card, { backgroundColor: surface, marginTop: 12, padding: 8 }]}>
-              {donorActivity.map((d, i) => (
-                <DonorActivityItem key={i} {...d} isDarkMode={isDarkMode} />
-              ))}
+              {donorActivityLoading && donorActivity.length === 0 ? (
+                <View style={{ padding: 20, alignItems: "center" }}>
+                  <ActivityIndicator color={COLORS.primary} />
+                  <Text style={[{ marginTop: 8, fontSize: 13 }, textSecondary]}>
+                    Loading donor activity…
+                  </Text>
+                </View>
+              ) : donorActivity.length === 0 ? (
+                <View style={{ padding: 20, alignItems: "center" }}>
+                  <MaterialIcons
+                    name="people-outline"
+                    size={32}
+                    color={textSecondary.color}
+                  />
+                  <Text style={[{ marginTop: 8, fontSize: 13, textAlign: "center" }, textSecondary]}>
+                    No donor responses yet.{"\n"}We&apos;re finding compatible donors nearby.
+                  </Text>
+                </View>
+              ) : (
+                donorActivity.map((d, i) => (
+                  <DonorActivityItem
+                    key={d.id ?? i}
+                    name={d.name}
+                    time={d.time}
+                    status={d.statusLabel}
+                    statusColor={d.statusColor}
+                    bloodType={d.bloodType}
+                    isDarkMode={isDarkMode}
+                  />
+                ))
+              )}
             </View>
           </View>
 
-          {/* ── BLOOD TYPE COMPATIBILITY ────────────────────────────────── */}
+          {/* ── BLOOD TYPE COMPATIBILITY ───────────────────────────────────── */}
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, textPrimary]}>Blood Compatibility</Text>
             <TouchableOpacity
@@ -700,7 +997,7 @@ const RecipientDashboard = ({
             </TouchableOpacity>
           </View>
 
-          {/* ── TIPS CARD ───────────────────────────────────────────────── */}
+          {/* ── TIPS CARD ─────────────────────────────────────────────────── */}
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, textPrimary]}>While You Wait</Text>
             <View
@@ -711,7 +1008,7 @@ const RecipientDashboard = ({
             >
               {[
                 { icon: "water-drop", tip: "Stay hydrated — drink at least 2L of water.", color: COLORS.accentBlue },
-                { icon: "hotel", tip: "Rest and avoid strenuous activity.", color: COLORS.accentPurple },
+                { icon: "hotel",      tip: "Rest and avoid strenuous activity.",            color: COLORS.accentPurple },
                 { icon: "restaurant", tip: "Eat iron-rich foods like spinach and lentils.", color: COLORS.accentGreen },
               ].map((item, i) => (
                 <View key={i} style={styles.tipRow}>
@@ -791,7 +1088,7 @@ const RecipientDashboard = ({
 
         <TouchableOpacity style={[styles.card, { backgroundColor: surface, marginTop: 12 }]}>
           <ImageBackground
-            source={require('../assets/images/exclamation.png')}
+            source={require("../assets/images/exclamation.png")}
             style={styles.resourceImage}
             imageStyle={{ borderRadius: 8 }}
           />
@@ -809,7 +1106,9 @@ const RecipientDashboard = ({
 
         <TouchableOpacity style={[styles.card, { backgroundColor: surface, marginTop: 12 }]}>
           <ImageBackground
-            source={{ uri: "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?q=80&w=500&auto=format&fit=crop" }}
+            source={{
+              uri: "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?q=80&w=500&auto=format&fit=crop",
+            }}
             style={styles.resourceImage}
             imageStyle={{ borderRadius: 8 }}
           />
@@ -865,7 +1164,11 @@ const RecipientDashboard = ({
               <Text style={[styles.cardLabel, textSecondary, { marginBottom: 8, marginTop: 4 }]}>
                 Blood Type
               </Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={{ marginBottom: 16 }}
+              >
                 <View style={{ flexDirection: "row", gap: 8 }}>
                   {BLOOD_TYPES.map((bt) => (
                     <TouchableOpacity
@@ -873,7 +1176,9 @@ const RecipientDashboard = ({
                       style={[
                         styles.bloodTypeChip,
                         selectedBloodType === bt && styles.bloodTypeChipActive,
-                        isDarkMode && selectedBloodType !== bt ? { borderColor: "#555" } : {},
+                        isDarkMode && selectedBloodType !== bt
+                          ? { borderColor: "#555" }
+                          : {},
                       ]}
                       onPress={() => setSelectedBloodType(bt)}
                     >
@@ -894,7 +1199,7 @@ const RecipientDashboard = ({
               </ScrollView>
 
               {/* Units Required */}
-              <Text style={[styles.cardLabel, textSecondary, { marginBottom: 8, marginTop: 0 }]}>
+              <Text style={[styles.cardLabel, textSecondary, { marginBottom: 8 }]}>
                 Units Required
               </Text>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
@@ -980,7 +1285,7 @@ const RecipientDashboard = ({
                     { flex: 0.2, backgroundColor: isDarkMode ? "#444" : "#EEE", marginTop: 0 },
                   ]}
                   onPress={() => {
-                    const c = parseInt(editUnitsFound) || 0;
+                    const c   = parseInt(editUnitsFound) || 0;
                     const max = parseInt(editUnits) || 0;
                     if (c < max) setEditUnitsFound((c + 1).toString());
                   }}
@@ -1075,7 +1380,9 @@ const RecipientDashboard = ({
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
               {dashNotifications.length === 0 ? (
-                <Text style={[{ textAlign: "center", marginTop: 20, fontSize: 14 }, textSecondary]}>
+                <Text
+                  style={[{ textAlign: "center", marginTop: 20, fontSize: 14 }, textSecondary]}
+                >
                   No notifications yet.
                 </Text>
               ) : (
@@ -1211,9 +1518,171 @@ const RecipientDashboard = ({
               </TouchableOpacity>
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
-              {bloodBanks.map((b, i) => (
-                <BloodBankCard key={i} {...b} isDarkMode={isDarkMode} />
-              ))}
+              {bloodBanksLoading ? (
+                <View style={{ paddingVertical: 30, alignItems: "center" }}>
+                  <ActivityIndicator color={COLORS.primary} />
+                  <Text style={[{ marginTop: 10, fontSize: 13 }, textSecondary]}>
+                    Loading nearby banks…
+                  </Text>
+                </View>
+              ) : bloodBanks.length === 0 ? (
+                <Text
+                  style={[{ textAlign: "center", marginTop: 20, fontSize: 14 }, textSecondary]}
+                >
+                  No blood banks found nearby.
+                </Text>
+              ) : (
+                bloodBanks.map((b, i) => (
+                  <BloodBankCard key={b.id ?? i} {...b} isDarkMode={isDarkMode} />
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── All Donor Activity Modal ──────────────────────────────────────── */}
+      <Modal
+        animationType="slide"
+        transparent
+        visible={isDonorActivityModalVisible}
+        onRequestClose={() => setDonorActivityModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View
+            style={[
+              styles.modalContent,
+              { backgroundColor: isDarkMode ? COLORS.surfaceDark : COLORS.backgroundLight },
+            ]}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={[styles.sectionTitle, textPrimary]}>All Donor Responses</Text>
+              <TouchableOpacity onPress={() => setDonorActivityModalVisible(false)}>
+                <MaterialIcons name="close" size={24} color={textSecondary.color} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Filter chips */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ marginBottom: 12, flexGrow: 0 }}
+            >
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {["All", "Confirmed", "Pending", "Declined", "On the Way"].map((f) => (
+                  <TouchableOpacity
+                    key={f}
+                    style={[
+                      styles.filterChip,
+                      isDarkMode ? { borderColor: "#555" } : {},
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.filterChipText,
+                        { color: isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary },
+                      ]}
+                    >
+                      {f}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {donorActivityLoading && allDonorActivity.length === 0 ? (
+                <View style={{ paddingVertical: 30, alignItems: "center" }}>
+                  <ActivityIndicator color={COLORS.primary} />
+                </View>
+              ) : allDonorActivity.length === 0 ? (
+                <View style={{ paddingVertical: 30, alignItems: "center" }}>
+                  <MaterialIcons
+                    name="people-outline"
+                    size={40}
+                    color={textSecondary.color}
+                  />
+                  <Text
+                    style={[{ marginTop: 12, fontSize: 14, textAlign: "center" }, textSecondary]}
+                  >
+                    No donor responses yet.
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  {allDonorActivity.map((d, i) => (
+                    <View
+                      key={d.id ?? i}
+                      style={[
+                        styles.donorRow,
+                        { backgroundColor: isDarkMode ? COLORS.grayblue : "#F0F5FA" },
+                      ]}
+                    >
+                      {/* Avatar placeholder */}
+                      <View style={styles.donorAvatar}>
+                        <Text style={styles.donorAvatarText}>
+                          {d.name?.charAt(0)?.toUpperCase() ?? "?"}
+                        </Text>
+                      </View>
+
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            styles.donorName,
+                            {
+                              color: isDarkMode
+                                ? COLORS.textDarkPrimary
+                                : COLORS.textLightPrimary,
+                            },
+                          ]}
+                        >
+                          {d.name}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.donorMeta,
+                            {
+                              color: isDarkMode
+                                ? COLORS.textDarkSecondary
+                                : COLORS.textLightSecondary,
+                            },
+                          ]}
+                        >
+                          {d.bloodType} • {d.time}
+                        </Text>
+                      </View>
+
+                      <View
+                        style={[
+                          styles.donorStatusBadge,
+                          { backgroundColor: d.statusColor + "20" },
+                        ]}
+                      >
+                        <Text style={[styles.donorStatusText, { color: d.statusColor }]}>
+                          {d.statusLabel}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+
+                  {/* Load more */}
+                  {donorActivityHasMore && (
+                    <TouchableOpacity
+                      style={styles.loadMoreBtn}
+                      onPress={handleLoadMoreDonors}
+                      disabled={donorActivityLoading}
+                    >
+                      {donorActivityLoading ? (
+                        <ActivityIndicator color={COLORS.primary} size="small" />
+                      ) : (
+                        <Text style={{ color: COLORS.primary, fontWeight: "700" }}>
+                          Load More
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  )}
+                </>
+              )}
             </ScrollView>
           </View>
         </View>
@@ -1281,8 +1750,12 @@ const RecipientDashboard = ({
   );
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  STYLES
+// ─────────────────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  section: { paddingHorizontal: 16, marginTop: 20 },
+  section:       { paddingHorizontal: 16, marginTop: 20 },
   card: {
     borderRadius: 16,
     padding: 16,
@@ -1297,21 +1770,21 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     marginBottom: 12,
   },
-  cardLabel: { fontSize: 12, fontWeight: "700", textTransform: "uppercase" },
-  cardTitle: { fontSize: 20, fontWeight: "700" },
-  mainTitle: { fontSize: 28, fontWeight: "700", marginBottom: 4 },
-  hospitalText: { fontSize: 16, marginBottom: 20, opacity: 0.8 },
-  bodyText: { fontSize: 14, lineHeight: 20, marginTop: 4 },
+  cardLabel:       { fontSize: 12, fontWeight: "700", textTransform: "uppercase" },
+  cardTitle:       { fontSize: 20, fontWeight: "700" },
+  mainTitle:       { fontSize: 28, fontWeight: "700", marginBottom: 4 },
+  hospitalText:    { fontSize: 16, marginBottom: 20, opacity: 0.8 },
+  bodyText:        { fontSize: 14, lineHeight: 20, marginTop: 4 },
   statsRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     marginBottom: 25,
     gap: 8,
   },
-  statBoxSmall: { flex: 1, backgroundColor: "#F8F9FA", padding: 12, borderRadius: 12 },
-  statNumberRed: { color: "#D32F2F", fontSize: 22, fontWeight: "700" },
-  statNumberBlue: { color: "#1976D2", fontSize: 22, fontWeight: "700" },
-  statLabelSmall: { fontSize: 9, color: "#666", fontWeight: "600", marginTop: 4 },
+  statBoxSmall:    { flex: 1, backgroundColor: "#F8F9FA", padding: 12, borderRadius: 12 },
+  statNumberRed:   { color: "#D32F2F", fontSize: 22, fontWeight: "700" },
+  statNumberBlue:  { color: "#1976D2", fontSize: 22, fontWeight: "700" },
+  statLabelSmall:  { fontSize: 9, color: "#666", fontWeight: "600", marginTop: 4 },
   detailsButton: {
     paddingHorizontal: 20,
     marginTop: 20,
@@ -1324,11 +1797,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   detailsButtonText: { color: "#fff", fontWeight: "700", fontSize: 16 },
-  sectionTitle: { fontSize: 18, fontWeight: "700" },
-  sectionHeaderRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  requestId: { fontSize: 10, fontWeight: "600", marginTop: 2, opacity: 0.7 },
-  headerRight: { flexDirection: "row", alignItems: "center", gap: 2 },
-  notifBell: { position: "relative", padding: 4 },
+  sectionTitle:      { fontSize: 18, fontWeight: "700" },
+  sectionHeaderRow:  { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  requestId:         { fontSize: 10, fontWeight: "600", marginTop: 2, opacity: 0.7 },
+  headerRight:       { flexDirection: "row", alignItems: "center", gap: 2 },
+  notifBell:         { position: "relative", padding: 4 },
   notifDot: {
     position: "absolute",
     top: 0,
@@ -1340,15 +1813,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  notifDotText: { color: "#fff", fontSize: 9, fontWeight: "800" },
-  liveRow: { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 10},
+  notifDotText:    { color: "#fff", fontSize: 9, fontWeight: "800" },
+  liveRow:         { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 10 },
   findingDonorsText: {
     fontSize: 12,
-    fontWeight: "700", backgroundColor: COLORS.lightGreen, borderRadius: 10,
-    paddingHorizontal: 8, paddingVertical: 4, color: COLORS.accentGreen
+    fontWeight: "700",
+    backgroundColor: COLORS.lightGreen,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    color: COLORS.accentGreen,
   },
   quickActionsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 12 },
-  compatRow: { flexDirection: "row", alignItems: "center", gap: 16, paddingVertical: 8 },
+  compatRow:        { flexDirection: "row", alignItems: "center", gap: 16, paddingVertical: 8 },
   compatBloodBadge: {
     width: 56,
     height: 56,
@@ -1357,16 +1834,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  compatBloodText: { color: "#fff", fontSize: 16, fontWeight: "800" },
-  compatArrow: { alignItems: "center", justifyContent: "center" },
-  compatList: { flexDirection: "row", flexWrap: "wrap", gap: 6, flex: 1 },
+  compatBloodText:  { color: "#fff", fontSize: 16, fontWeight: "800" },
+  compatArrow:      { alignItems: "center", justifyContent: "center" },
+  compatList:       { flexDirection: "row", flexWrap: "wrap", gap: 6, flex: 1 },
   compatChip: {
     backgroundColor: COLORS.accentGreen + "20",
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 8,
   },
-  compatChipText: { color: COLORS.accentGreen, fontWeight: "700", fontSize: 13 },
+  compatChipText:  { color: COLORS.accentGreen, fontWeight: "700", fontSize: 13 },
   compatTableRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1384,10 +1861,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   compatTableBloodText: { color: "#fff", fontWeight: "800", fontSize: 13 },
-  compatTableLabel: { flex: 1, fontSize: 14, fontWeight: "600" },
-  tipsCard: { borderRadius: 16, padding: 16, marginTop: 12, gap: 14 },
-  tipRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
-  tipText: { flex: 1, fontSize: 14, lineHeight: 20 },
+  compatTableLabel:     { flex: 1, fontSize: 14, fontWeight: "600" },
+  tipsCard:             { borderRadius: 16, padding: 16, marginTop: 12, gap: 14 },
+  tipRow:               { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  tipText:              { flex: 1, fontSize: 14, lineHeight: 20 },
   historyItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -1395,7 +1872,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 10,
   },
-  historyLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
+  historyLeft:      { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
   historyBloodBadge: {
     width: 44,
     height: 44,
@@ -1405,11 +1882,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   historyBloodText: { color: "#fff", fontWeight: "800", fontSize: 13 },
-  historyId: { fontSize: 13, fontWeight: "700" },
-  historyMeta: { fontSize: 11, marginTop: 2 },
+  historyId:        { fontSize: 13, fontWeight: "700" },
+  historyMeta:      { fontSize: 11, marginTop: 2 },
   historyStatusBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
-  historyStatusText: { fontSize: 11, fontWeight: "700" },
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)" },
+  historyStatusText:  { fontSize: 11, fontWeight: "700" },
+  modalOverlay:       { flex: 1, backgroundColor: "rgba(0,0,0,0.5)" },
   modalContent: {
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
@@ -1442,8 +1919,8 @@ const styles = StyleSheet.create({
     borderColor: "#ddd",
     backgroundColor: "transparent",
   },
-  bloodTypeChipActive: { borderColor: COLORS.primary, backgroundColor: COLORS.primary },
-  bloodTypeChipText: { fontSize: 14, fontWeight: "700", color: COLORS.textLightPrimary },
+  bloodTypeChipActive:     { borderColor: COLORS.primary, backgroundColor: COLORS.primary },
+  bloodTypeChipText:       { fontSize: 14, fontWeight: "700", color: COLORS.textLightPrimary },
   bloodTypeChipTextActive: { color: "#fff" },
   chronicCard: { backgroundColor: "#3F72AF", borderRadius: 20, padding: 24, marginTop: 20 },
   chronicTitle: { color: "#FFF", fontSize: 26, fontWeight: "800", marginBottom: 8 },
@@ -1456,9 +1933,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 12,
   },
-  chronicActionText: { color: "#FFF", fontSize: 16, fontWeight: "600", flex: 1, marginLeft: 12 },
-  chronicDivider: { height: 1, backgroundColor: "rgba(255,255,255,0.1)", marginVertical: 12 },
-  nextSessionRow: { flexDirection: "row", alignItems: "center", marginTop: 8 },
+  chronicActionText:    { color: "#FFF", fontSize: 16, fontWeight: "600", flex: 1, marginLeft: 12 },
+  chronicDivider:       { height: 1, backgroundColor: "rgba(255,255,255,0.1)", marginVertical: 12 },
+  nextSessionRow:       { flexDirection: "row", alignItems: "center", marginTop: 8 },
   sessionIconBox: {
     width: 44,
     height: 44,
@@ -1467,9 +1944,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  sessionInfo: { marginLeft: 16 },
-  sessionLabel: { color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: "800", letterSpacing: 1 },
-  sessionTime: { color: "#FFF", fontSize: 18, fontWeight: "700", marginTop: 2 },
+  sessionInfo:          { marginLeft: 16 },
+  sessionLabel:         { color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  sessionTime:          { color: "#FFF", fontSize: 18, fontWeight: "700", marginTop: 2 },
   chronicCardDark: {
     backgroundColor: "#2e2828",
     borderRadius: 20,
@@ -1477,7 +1954,7 @@ const styles = StyleSheet.create({
     marginTop: 20,
     borderWidth: 1,
   },
-  chronicTitleDark: { color: COLORS.textDarkPrimary, fontSize: 26, fontWeight: "800", marginBottom: 8 },
+  chronicTitleDark:    { color: COLORS.textDarkPrimary, fontSize: 26, fontWeight: "800", marginBottom: 8 },
   chronicSubtitleDark: { color: COLORS.textDarkSecondary, fontSize: 14, lineHeight: 20, marginBottom: 24 },
   chronicActionRowRed: {
     backgroundColor: "#503f3f",
@@ -1489,7 +1966,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   chronicActionTextDark: { color: "#FFF", fontSize: 16, fontWeight: "700", flex: 1, marginLeft: 12 },
-  chronicDividerDark: { height: 1, backgroundColor: "#503f3f83", marginVertical: 12 },
+  chronicDividerDark:    { height: 1, backgroundColor: "#503f3f83", marginVertical: 12 },
   sessionIconBoxDark: {
     width: 44,
     height: 44,
@@ -1499,8 +1976,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   sessionLabelDark: { color: COLORS.textDarkSecondary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
-  textPrimaryDark: { color: COLORS.textDarkPrimary },
-  resourceImage: { width: "100%", aspectRatio: 16 / 9, marginTop: 8 },
+  textPrimaryDark:  { color: COLORS.textDarkPrimary },
+  resourceImage:    { width: "100%", aspectRatio: 16 / 9, marginTop: 8 },
   resourceButton: {
     marginTop: 16,
     flexDirection: "row",
@@ -1512,6 +1989,45 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   resourceButtonText: { color: "#fff", fontSize: 14, fontWeight: "700" },
+
+  // ── Donor Activity Modal ─────────────────────────────────────────────────
+  donorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+    gap: 12,
+  },
+  donorAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: COLORS.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  donorAvatarText:    { color: "#fff", fontWeight: "800", fontSize: 16 },
+  donorName:          { fontSize: 14, fontWeight: "700" },
+  donorMeta:          { fontSize: 12, marginTop: 2 },
+  donorStatusBadge:   { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
+  donorStatusText:    { fontSize: 11, fontWeight: "700" },
+  loadMoreBtn: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 14,
+    marginTop: 4,
+  },
+
+  // ── Filter chips ─────────────────────────────────────────────────────────
+  filterChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: "#ddd",
+  },
+  filterChipText: { fontSize: 13, fontWeight: "600" },
 });
 
 export default RecipientDashboard;

@@ -1,13 +1,17 @@
 import { MaterialIcons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
+  Animated,
+  KeyboardAvoidingView,
   Linking,
+  Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 import { useTheme } from "../context";
 
@@ -27,21 +31,286 @@ const COLORS = {
   gray800: "#1F2937",
 };
 
+// ⚠️ REPLACE THIS WITH YOUR PC'S LOCAL IP ADDRESS
+const LOCAL_PC_IP = "127.0.0.1";
+const LM_STUDIO_URL = `http://${LOCAL_PC_IP}:1234/v1/chat`;
+
+const SYSTEM_PROMPT =
+  "You are Blood Hive AI, a helpful, concise medical logistics assistant. Help users understand blood donation requirements, eligibility rules, and platform usage. Keep answers under 3 sentences.";
+
+// ─────────────────────────────────────────────
+// AI Chat Modal
+// ─────────────────────────────────────────────
+const AIChatModal = ({ visible, onClose, isDarkMode }) => {
+  const [messages, setMessages] = useState([
+    {
+      id: "welcome",
+      role: "assistant",
+      text: "Hi! I'm Blood Hive AI. Ask me anything about blood donation eligibility, rules, or how to use the platform.",
+    },
+  ]);
+  const [userInput, setUserInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const scrollViewRef = useRef(null);
+
+  const bg = isDarkMode ? COLORS.backgroundDark : COLORS.backgroundLight;
+  const surface = isDarkMode ? COLORS.surfaceDark : COLORS.surfaceLight;
+  const inputBg = isDarkMode ? "#2A2A2A" : "#E5E7EB";
+  const headerBg = isDarkMode ? "#1A1A1A" : "#FFFFFF";
+  const borderColor = isDarkMode ? "#2A2A2A" : "#E5E7EB";
+  const textPrimaryColor = isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary;
+  const textSecondaryColor = isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary;
+
+  const sendMessage = async () => {
+    const trimmed = userInput.trim();
+    if (!trimmed || isLoading) return;
+
+    const userMsg = { id: Date.now().toString(), role: "user", text: trimmed };
+    setMessages((prev) => [...prev, userMsg]);
+    setUserInput("");
+    setIsLoading(true);
+
+    // Scroll to bottom after adding user message
+    setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
+
+    try {
+      // Build conversation history for context (last 10 msgs)
+      const history = [...messages, userMsg]
+        .slice(-10)
+        .filter((m) => m.role !== "welcome")
+        .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }));
+
+      const response = await fetch(LM_STUDIO_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "local-model",
+          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
+          temperature: 0.7,
+        }),
+      });
+
+      const data = await response.json();
+      const aiText =
+        data.choices && data.choices[0]
+          ? data.choices[0].message.content.trim()
+          : "Sorry, I couldn't process that right now.";
+
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now().toString() + "_ai", role: "assistant", text: aiText },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString() + "_err",
+          role: "assistant",
+          text: "Could not connect to Blood Hive AI. Ensure your host PC is running LM Studio on the same Wi-Fi network.",
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+      setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 150);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: bg }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+      >
+        {/* Modal Header */}
+        <View style={[modalStyles.header, { backgroundColor: headerBg, borderBottomColor: borderColor }]}>
+          <View style={modalStyles.headerLeft}>
+            <View style={modalStyles.aiAvatarSmall}>
+              <MaterialIcons name="psychology" size={18} color="#fff" />
+            </View>
+            <View>
+              <Text style={[modalStyles.headerTitle, { color: textPrimaryColor }]}>Blood Hive AI</Text>
+              <Text style={[modalStyles.headerSubtitle, { color: COLORS.accentGreen }]}>
+                {isLoading ? "Thinking…" : "Online"}
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn} activeOpacity={0.7}>
+            <MaterialIcons name="close" size={22} color={textSecondaryColor} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Messages */}
+        <ScrollView
+          ref={scrollViewRef}
+          style={{ flex: 1 }}
+          contentContainerStyle={[modalStyles.messageList, { paddingBottom: 16 }]}
+          showsVerticalScrollIndicator={false}
+          onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
+        >
+          {messages.map((msg) => {
+            const isAi = msg.role === "assistant";
+            return (
+              <View
+                key={msg.id}
+                style={[
+                  modalStyles.messageBubbleRow,
+                  isAi ? modalStyles.rowLeft : modalStyles.rowRight,
+                ]}
+              >
+                {isAi && (
+                  <View style={modalStyles.aiAvatarTiny}>
+                    <MaterialIcons name="psychology" size={12} color="#fff" />
+                  </View>
+                )}
+                <View
+                  style={[
+                    modalStyles.bubble,
+                    isAi
+                      ? [modalStyles.bubbleAi, { backgroundColor: surface }]
+                      : [modalStyles.bubbleUser, { backgroundColor: COLORS.accentBlue }],
+                  ]}
+                >
+                  <Text
+                    style={[
+                      modalStyles.bubbleText,
+                      { color: isAi ? textPrimaryColor : "#fff" },
+                    ]}
+                  >
+                    {msg.text}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
+
+          {isLoading && (
+            <View style={[modalStyles.messageBubbleRow, modalStyles.rowLeft]}>
+              <View style={modalStyles.aiAvatarTiny}>
+                <MaterialIcons name="psychology" size={12} color="#fff" />
+              </View>
+              <View style={[modalStyles.bubble, modalStyles.bubbleAi, { backgroundColor: surface }]}>
+                <View style={modalStyles.typingDots}>
+                  <TypingDot delay={0} isDarkMode={isDarkMode} />
+                  <TypingDot delay={200} isDarkMode={isDarkMode} />
+                  <TypingDot delay={400} isDarkMode={isDarkMode} />
+                </View>
+              </View>
+            </View>
+          )}
+        </ScrollView>
+
+        {/* Suggested prompts (only show when no user messages yet) */}
+        {messages.length === 1 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={modalStyles.suggestionsRow}
+          >
+            {[
+              "Can I donate after a tattoo?",
+              "What's the age limit?",
+              "How often can I donate?",
+              "Iron level requirements?",
+            ].map((s) => (
+              <TouchableOpacity
+                key={s}
+                style={[modalStyles.suggestionChip, { backgroundColor: surface, borderColor }]}
+                activeOpacity={0.75}
+                onPress={() => setUserInput(s)}
+              >
+                <Text style={[modalStyles.suggestionText, { color: textPrimaryColor }]}>{s}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+
+        {/* Input Bar */}
+        <View style={[modalStyles.inputBar, { backgroundColor: headerBg, borderTopColor: borderColor }]}>
+          <TextInput
+            style={[modalStyles.textInput, { backgroundColor: inputBg, color: textPrimaryColor }]}
+            placeholder="Ask about blood donation…"
+            placeholderTextColor={textSecondaryColor}
+            value={userInput}
+            onChangeText={setUserInput}
+            multiline
+            maxLength={500}
+            onSubmitEditing={sendMessage}
+            returnKeyType="send"
+          />
+          <TouchableOpacity
+            style={[modalStyles.sendBtn, { opacity: isLoading || !userInput.trim() ? 0.45 : 1 }]}
+            onPress={sendMessage}
+            disabled={isLoading || !userInput.trim()}
+            activeOpacity={0.8}
+          >
+            <MaterialIcons name="send" size={18} color="#fff" />
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+};
+
+// Animated typing indicator dot
+const TypingDot = ({ delay, isDarkMode }) => {
+  const anim = useRef(new Animated.Value(0)).current;
+
+  useState(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.delay(delay),
+        Animated.timing(anim, { toValue: -5, duration: 300, useNativeDriver: true }),
+        Animated.timing(anim, { toValue: 0, duration: 300, useNativeDriver: true }),
+        Animated.delay(600 - delay),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  });
+
+  return (
+    <Animated.View
+      style={[
+        modalStyles.dot,
+        {
+          backgroundColor: isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary,
+          transform: [{ translateY: anim }],
+        },
+      ]}
+    />
+  );
+};
+
+// ─────────────────────────────────────────────
+// Main Support Screen
+// ─────────────────────────────────────────────
 const SupportScreen = ({ setActiveTab }) => {
   const { isDarkMode } = useTheme();
   const [openItem, setOpenItem] = useState(null);
+  const [aiModalVisible, setAiModalVisible] = useState(false);
+
+  // FAB pulse animation
+  const fabScale = useRef(new Animated.Value(1)).current;
+  const pulseAnim = useRef(
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(fabScale, { toValue: 1.12, duration: 900, useNativeDriver: true }),
+        Animated.timing(fabScale, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ])
+    )
+  ).current;
+
+  useState(() => {
+    pulseAnim.start();
+    return () => pulseAnim.stop();
+  });
 
   const bgStyle = isDarkMode ? styles.darkContainer : styles.lightContainer;
-  const textPrimary = isDarkMode
-    ? styles.textPrimaryDark
-    : styles.textPrimaryLight;
-  const textSecondary = isDarkMode
-    ? styles.textSecondaryDark
-    : styles.textSecondaryLight;
+  const textPrimary = isDarkMode ? styles.textPrimaryDark : styles.textPrimaryLight;
+  const textSecondary = isDarkMode ? styles.textSecondaryDark : styles.textSecondaryLight;
   const surface = isDarkMode ? COLORS.surfaceDark : COLORS.surfaceLight;
-  const headerBg = isDarkMode
-    ? COLORS.backgroundDark
-    : COLORS.backgroundLight;
+  const headerBg = isDarkMode ? COLORS.backgroundDark : COLORS.backgroundLight;
   const borderColor = isDarkMode ? "#2A2A2A" : "#E5E7EB";
   const dropdownBg = isDarkMode ? "#18181B" : "#FFFFFF";
 
@@ -69,30 +338,15 @@ const SupportScreen = ({ setActiveTab }) => {
       actionText: "Send Email",
       actionIcon: "email",
       onAction: () =>
-        Linking.openURL(
-          "mailto:support@bloodhive.com?subject=Support Request&body=Hello Support Team,"
-        ),
-    },
-    {
-      id: 3,
-      title: "FAQs & Resources",
-      desc: "Read donation, request, and medical support guides.",
-      icon: "menu-book",
-      contentTitle: "Helpful Resources",
-      contentText:
-        "• Who can donate blood?\n• How often can someone donate?\n• How to request blood?\n• What to do in emergencies?\n• How to keep profile and contact details updated?",
-      actionText: "View Guides",
-      actionIcon: "article",
-      onAction: () => router.push("/faq_details"),
+        Linking.openURL("mailto:support@bloodhive.com?subject=Support Request&body=Hello Support Team,"),
     },
   ];
 
-  const toggleDropdown = (id) => {
-    setOpenItem(openItem === id ? null : id);
-  };
+  const toggleDropdown = (id) => setOpenItem(openItem === id ? null : id);
 
   return (
     <View style={[styles.safeArea, bgStyle]}>
+      {/* Header */}
       <View style={[styles.header, { backgroundColor: headerBg }]}>
         <TouchableOpacity
           style={styles.headerIconButton}
@@ -105,31 +359,49 @@ const SupportScreen = ({ setActiveTab }) => {
             color={isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary}
           />
         </TouchableOpacity>
-
         <Text style={[styles.headerTitle, textPrimary]}>Support</Text>
-
         <View style={styles.headerIconButton} />
       </View>
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: 120 }}
+        contentContainerStyle={{ paddingBottom: 140 }}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.section}>
           <View style={[styles.card, { backgroundColor: surface }]}>
             <Text style={[styles.cardTitle, textPrimary]}>Need Help?</Text>
             <Text style={[styles.bodyText, textSecondary]}>
-              We are here to help you with donor search, request tracking,
-              eligibility questions, and emergency coordination.
+              We are here to help you with donor search, request tracking, eligibility questions, and
+              emergency coordination.
             </Text>
           </View>
         </View>
 
+        {/* AI Chat Banner */}
+        <View style={[styles.section, { paddingTop: 0 }]}>
+          <TouchableOpacity
+            style={[styles.aiBanner, { backgroundColor: COLORS.accentBlue }]}
+            activeOpacity={0.85}
+            onPress={() => setAiModalVisible(true)}
+          >
+            <View style={styles.aiBannerIconWrap}>
+              <MaterialIcons name="psychology" size={26} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.aiBannerTitle}>Blood Hive AI</Text>
+              <Text style={styles.aiBannerSub}>
+                Ask about eligibility, rules, or how to use the platform
+              </Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={24} color="rgba(255,255,255,0.7)" />
+          </TouchableOpacity>
+        </View>
+
+        {/* Support Options */}
         <View style={styles.section}>
           {supportOptions.map((item) => {
             const isOpen = openItem === item.id;
-
             return (
               <View
                 key={item.id}
@@ -137,9 +409,7 @@ const SupportScreen = ({ setActiveTab }) => {
                   styles.dropdownWrapper,
                   {
                     backgroundColor: surface,
-                    borderColor: isOpen
-                      ? "rgba(217,45,32,0.25)"
-                      : borderColor,
+                    borderColor: isOpen ? "rgba(217,45,32,0.25)" : borderColor,
                   },
                 ]}
               >
@@ -149,22 +419,12 @@ const SupportScreen = ({ setActiveTab }) => {
                   onPress={() => toggleDropdown(item.id)}
                 >
                   <View style={styles.supportIconWrap}>
-                    <MaterialIcons
-                      name={item.icon}
-                      size={22}
-                      color={COLORS.accentBlue}
-                    />
+                    <MaterialIcons name={item.icon} size={22} color={COLORS.accentBlue} />
                   </View>
-
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.supportTitle, textPrimary]}>
-                      {item.title}
-                    </Text>
-                    <Text style={[styles.bodyText, textSecondary]}>
-                      {item.desc}
-                    </Text>
+                    <Text style={[styles.supportTitle, textPrimary]}>{item.title}</Text>
+                    <Text style={[styles.bodyText, textSecondary]}>{item.desc}</Text>
                   </View>
-
                   <MaterialIcons
                     name={isOpen ? "keyboard-arrow-up" : "keyboard-arrow-down"}
                     size={26}
@@ -176,33 +436,18 @@ const SupportScreen = ({ setActiveTab }) => {
                   <View
                     style={[
                       styles.dropdownContent,
-                      {
-                        backgroundColor: dropdownBg,
-                        borderTopColor: borderColor,
-                      },
+                      { backgroundColor: dropdownBg, borderTopColor: borderColor },
                     ]}
                   >
-                    <Text style={[styles.dropdownTitle, textPrimary]}>
-                      {item.contentTitle}
-                    </Text>
-
-                    <Text style={[styles.dropdownText, textSecondary]}>
-                      {item.contentText}
-                    </Text>
-
+                    <Text style={[styles.dropdownTitle, textPrimary]}>{item.contentTitle}</Text>
+                    <Text style={[styles.dropdownText, textSecondary]}>{item.contentText}</Text>
                     <TouchableOpacity
                       style={styles.actionButton}
                       activeOpacity={0.8}
                       onPress={item.onAction}
                     >
-                      <MaterialIcons
-                        name={item.actionIcon}
-                        size={18}
-                        color="#fff"
-                      />
-                      <Text style={styles.actionButtonText}>
-                        {item.actionText}
-                      </Text>
+                      <MaterialIcons name={item.actionIcon} size={18} color="#fff" />
+                      <Text style={styles.actionButtonText}>{item.actionText}</Text>
                     </TouchableOpacity>
                   </View>
                 )}
@@ -211,20 +456,43 @@ const SupportScreen = ({ setActiveTab }) => {
           })}
         </View>
       </ScrollView>
+
+      {/* ── Floating Action Button ── */}
+      <View style={fabStyles.fabContainer} pointerEvents="box-none">
+        {/* Pulsing ring behind FAB */}
+        <Animated.View
+          style={[
+            fabStyles.fabRing,
+            { transform: [{ scale: fabScale }] },
+          ]}
+        />
+        <TouchableOpacity
+          style={fabStyles.fab}
+          activeOpacity={0.88}
+          onPress={() => setAiModalVisible(true)}
+        >
+          <MaterialIcons name="psychology" size={26} color="#fff" />
+        </TouchableOpacity>
+        <Text style={fabStyles.fabLabel}>AI Chat</Text>
+      </View>
+
+      {/* ── AI Chat Modal ── */}
+      <AIChatModal
+        visible={aiModalVisible}
+        onClose={() => setAiModalVisible(false)}
+        isDarkMode={isDarkMode}
+      />
     </View>
   );
 };
 
+// ─────────────────────────────────────────────
+// StyleSheets
+// ─────────────────────────────────────────────
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-  },
-  lightContainer: {
-    backgroundColor: COLORS.backgroundLight,
-  },
-  darkContainer: {
-    backgroundColor: COLORS.backgroundDark,
-  },
+  safeArea: { flex: 1 },
+  lightContainer: { backgroundColor: COLORS.backgroundLight },
+  darkContainer: { backgroundColor: COLORS.backgroundDark },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -232,49 +500,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
-  headerIconButton: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: "800",
-    textAlign: "center",
-    flex: 1,
-  },
-  section: {
-    padding: 16,
-  },
-  card: {
-    borderRadius: 12,
-    padding: 16,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    gap: 8,
-  },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-  },
-  bodyText: {
-    fontSize: 15,
-    lineHeight: 20,
-  },
-  dropdownWrapper: {
-    borderRadius: 14,
-    marginBottom: 14,
-    overflow: "hidden",
-    borderWidth: 1,
-  },
-  supportCard: {
-    padding: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
+  headerIconButton: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
+  headerTitle: { fontSize: 22, fontWeight: "800", textAlign: "center", flex: 1 },
+  section: { padding: 16 },
+  card: { borderRadius: 12, padding: 16, shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, gap: 8 },
+  cardTitle: { fontSize: 18, fontWeight: "700" },
+  bodyText: { fontSize: 15, lineHeight: 20 },
+  dropdownWrapper: { borderRadius: 14, marginBottom: 14, overflow: "hidden", borderWidth: 1 },
+  supportCard: { padding: 14, flexDirection: "row", alignItems: "center", gap: 12 },
   supportIconWrap: {
     width: 44,
     height: 44,
@@ -283,25 +516,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  supportTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-  dropdownContent: {
-    padding: 14,
-    borderTopWidth: 1,
-  },
-  dropdownTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    marginBottom: 8,
-  },
-  dropdownText: {
-    fontSize: 14,
-    lineHeight: 21,
-    marginBottom: 14,
-  },
+  supportTitle: { fontSize: 16, fontWeight: "700", marginBottom: 4 },
+  dropdownContent: { padding: 14, borderTopWidth: 1 },
+  dropdownTitle: { fontSize: 15, fontWeight: "700", marginBottom: 8 },
+  dropdownText: { fontSize: 14, lineHeight: 21, marginBottom: 14 },
   actionButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -311,15 +529,169 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     borderRadius: 10,
   },
-  actionButtonText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "700",
-  },
+  actionButtonText: { color: "#fff", fontSize: 14, fontWeight: "700" },
   textPrimaryLight: { color: COLORS.textLightPrimary },
   textSecondaryLight: { color: COLORS.textLightSecondary },
   textPrimaryDark: { color: COLORS.textDarkPrimary },
   textSecondaryDark: { color: COLORS.textDarkSecondary },
+
+  // AI Banner
+  aiBanner: {
+    borderRadius: 14,
+    padding: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    shadowColor: COLORS.accentBlue,
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  aiBannerIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  aiBannerTitle: { color: "#fff", fontSize: 16, fontWeight: "800", marginBottom: 2 },
+  aiBannerSub: { color: "rgba(255,255,255,0.75)", fontSize: 13, lineHeight: 18 },
+});
+
+const fabStyles = StyleSheet.create({
+  fabContainer: {
+    position: "absolute",
+    bottom: 28,
+    right: 22,
+    alignItems: "center",
+  },
+  fabRing: {
+    position: "absolute",
+    bottom: 18,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(217,45,32,0.22)",
+  },
+  fab: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: COLORS.accentBlue,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: COLORS.accentBlue,
+    shadowOpacity: 0.55,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
+  },
+  fabLabel: {
+    marginTop: 5,
+    fontSize: 11,
+    fontWeight: "700",
+    color: COLORS.accentBlue,
+    letterSpacing: 0.3,
+  },
+});
+
+const modalStyles = StyleSheet.create({
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+  },
+  headerLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
+  aiAvatarSmall: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: COLORS.accentBlue,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitle: { fontSize: 16, fontWeight: "800" },
+  headerSubtitle: { fontSize: 12, fontWeight: "600", marginTop: 1 },
+  closeBtn: { padding: 6 },
+
+  messageList: { padding: 16, gap: 10 },
+  messageBubbleRow: { flexDirection: "row", alignItems: "flex-end", gap: 8, marginBottom: 6 },
+  rowLeft: { justifyContent: "flex-start" },
+  rowRight: { justifyContent: "flex-end" },
+
+  aiAvatarTiny: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    backgroundColor: COLORS.accentBlue,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  bubble: {
+    maxWidth: "78%",
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  bubbleAi: {
+    borderBottomLeftRadius: 4,
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+  },
+  bubbleUser: {
+    borderBottomRightRadius: 4,
+    shadowColor: COLORS.accentBlue,
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  bubbleText: { fontSize: 14, lineHeight: 20 },
+
+  typingDots: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 4 },
+  dot: { width: 7, height: 7, borderRadius: 4 },
+
+  suggestionsRow: { paddingHorizontal: 16, paddingBottom: 12, gap: 8 },
+  suggestionChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  suggestionText: { fontSize: 13, fontWeight: "500" },
+
+  inputBar: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+  },
+  textInput: {
+    flex: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+    minHeight: 44,
+    maxHeight: 110,
+    textAlignVertical: "top",
+  },
+  sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: COLORS.accentBlue,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });
 
 export default SupportScreen;

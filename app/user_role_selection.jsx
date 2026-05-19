@@ -80,7 +80,7 @@ const RoleSelectionScreen = () => {
           >
             <MaterialIcons
               name="volunteer-activism"
-              size={40}
+              size={40} 
               color={COLORS.primary}
             />
             <View style={styles.cardTextContainer}>

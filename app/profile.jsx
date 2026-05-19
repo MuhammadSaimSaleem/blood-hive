@@ -174,6 +174,7 @@ const ProfileScreen = () => {
     { label: "Blood Type", value: userData?.blood_type || "N/A" },
     { label: "Phone", value: userData?.phone_number ? `+92 ${userData.phone_number}` : "N/A" },
     { label: "Address", value: userData?.address || "N/A" },
+    { label: "city", value: userData?.city || "N/A" },
     { label: "Email", value: userData?.email || "N/A" },
   ];
 
