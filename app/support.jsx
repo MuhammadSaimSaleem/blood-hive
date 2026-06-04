@@ -31,12 +31,8 @@ const COLORS = {
   gray800: "#1F2937",
 };
 
-// ⚠️ REPLACE THIS WITH YOUR PC'S LOCAL IP ADDRESS
-const LOCAL_PC_IP = "127.0.0.1";
-const LM_STUDIO_URL = `http://${LOCAL_PC_IP}:1234/v1/chat`;
-
-const SYSTEM_PROMPT =
-  "You are Blood Hive AI, a helpful, concise medical logistics assistant. Help users understand blood donation requirements, eligibility rules, and platform usage. Keep answers under 3 sentences.";
+const LOCAL_PC_IP = "10.247.118.77";
+const ANTHROPIC_URL = `http://${LOCAL_PC_IP}:1234/chat`;
 
 // ─────────────────────────────────────────────
 // AI Chat Modal
@@ -77,36 +73,30 @@ const AIChatModal = ({ visible, onClose, isDarkMode }) => {
       // Build conversation history for context (last 10 msgs)
       const history = [...messages, userMsg]
         .slice(-10)
-        .filter((m) => m.role !== "welcome")
+        .filter((m) => m.id !== "welcome")
         .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }));
 
-      const response = await fetch(LM_STUDIO_URL, {
+      const response = await fetch(ANTHROPIC_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "local-model",
-          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
-          temperature: 0.7,
-        }),
+        body: JSON.stringify({ messages: history }),
       });
 
       const data = await response.json();
-      const aiText =
-        data.choices && data.choices[0]
-          ? data.choices[0].message.content.trim()
-          : "Sorry, I couldn't process that right now.";
+      const aiText = data.text ?? "Sorry, I couldn't process that right now.";
 
       setMessages((prev) => [
         ...prev,
         { id: Date.now().toString() + "_ai", role: "assistant", text: aiText },
       ]);
-    } catch {
+    } catch (err) {
+      console.error("Blood Hive AI error:", err?.message ?? err);
       setMessages((prev) => [
         ...prev,
         {
           id: Date.now().toString() + "_err",
           role: "assistant",
-          text: "Could not connect to Blood Hive AI. Ensure your host PC is running LM Studio on the same Wi-Fi network.",
+          text: `Connection failed: ${err?.message ?? "Unknown error"}. Make sure server.js is running on your PC and both devices are on the same Wi-Fi.`,
         },
       ]);
     } finally {

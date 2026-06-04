@@ -4,7 +4,6 @@ import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "../context";
 
-// Import your refactored screens
 import { useLocalSearchParams } from "expo-router";
 import DashboardScreen from "./dashboard";
 import HistoryScreen from "./history";
