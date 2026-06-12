@@ -238,7 +238,6 @@ const MultiStepRegistrationScreen = () => {
 
     try {
       // 1. Create the Auth Account first
-      // This adds the user to the "Authentication" tab you saw in your screenshot
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: email,
         password: password,
@@ -250,22 +249,20 @@ const MultiStepRegistrationScreen = () => {
         setErrors(newErrors);
         return; 
       } else if (authError) {
-        alert(authError);
+        alert(authError.message);
         return;
       } else {
-          const authUser = authData.user;
+        const authUser = authData.user;
 
-          // 2. Upload images using the new Auth User ID
-          const [profileImageUrl, idFrontUrl, idBackUrl] = await Promise.all([
-            profileImage ? uploadImage(profileImage, 'profiles', 'profileImage', fullName) : Promise.resolve(null),
-            uploadImage(idFront, 'profiles', 'frontID', fullName),
-            uploadImage(idBack, 'profiles', 'backID', fullName),
-          ]);
+        // 2. Upload images using the new Auth User ID
+        const [profileImageUrl, idFrontUrl, idBackUrl] = await Promise.all([
+          profileImage ? uploadImage(profileImage, 'profiles', 'profileImage', fullName) : Promise.resolve(null),
+          uploadImage(idFront, 'profiles', 'frontID', fullName),
+          uploadImage(idBack, 'profiles', 'backID', fullName),
+        ]);
 
-
-          if (dbError) throw dbError;
-
-          const { error: dbError } = await supabase
+        // 3. Perform the Database Upsert (Await and capture response)
+        const { error: dbError } = await supabase
           .from('users')
           .upsert({
             id: authUser.id, // The link between Auth and Database
@@ -276,7 +273,7 @@ const MultiStepRegistrationScreen = () => {
             gender: gender,
             role: role,
             phone_number: phoneNumber,
-            profile_image: profileImageUrl,
+            profile_image_url: profileImageUrl, // Fixed column name mismatch
             id_front: idFrontUrl,
             id_back: idBackUrl,
             blood_type: bloodType,
@@ -290,13 +287,16 @@ const MultiStepRegistrationScreen = () => {
             notifications_enabled: notificationConsent,
           });
 
-          alert('Registration Successful! Please verify your email.');
-          router.dismissAll();
-          router.replace('/login');
+        // 4. Safely check the error after it has been defined
+        if (dbError) throw dbError;
 
-        }
+        alert('Registration Successful! Please verify your email.');
+        router.dismissAll();
+        router.replace('/login');
+      }
     } catch (error) {
-      console.error(error);
+      console.error("Registration error details:", error);
+      alert(error.message || "An unexpected database insert error occurred.");
     }
   };
 

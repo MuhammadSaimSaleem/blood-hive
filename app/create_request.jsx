@@ -1,6 +1,6 @@
 import { MaterialIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -31,49 +31,6 @@ const COLORS = {
   gray200: "#E5E7EB",
 };
 
-const HOSPITALS = [
-  // CHINIOT
-  { label: "Harral Medical Complex", value: "Harral Medical Complex", city: "Chiniot" },
-  { label: "Islamia Hospital", value: "Islamia Hospital", city: "Chiniot" },
-  { label: "Majeeda Memorial Hospital", value: "Majeeda Memorial Hospital", city: "Chiniot" },
-  { label: "Yaseen Hospital & Urology Centre", value: "Yaseen Hospital & Urology Centre", city: "Chiniot" },
-  // FAISALABAD
-  { label: "Abubakar Eye Center, Sumandri", value: "Abubakar Eye Center, Sumandri", city: "Faisalabad" },
-  { label: "Abwa Hospital", value: "Abwa Hospital", city: "Faisalabad" },
-  { label: "Aslam Memorial Zakaria Hospital", value: "Aslam Memorial Zakaria Hospital", city: "Faisalabad" },
-  { label: "Faisalabad International Hospital", value: "Faisalabad International Hospital", city: "Faisalabad" },
-  { label: "Fazal Elahi Chatha", value: "Fazal Elahi Chatha", city: "Faisalabad" },
-  { label: "Fazal Elahi Chatha Hospital-2", value: "Fazal Elahi Chatha Hospital-2", city: "Faisalabad" },
-  { label: "FIC Faisalabad Institute of Cardiology", value: "FIC Faisalabad Institute of Cardiology", city: "Faisalabad" },
-  { label: "Independent University Hospital", value: "Independent University Hospital", city: "Faisalabad" },
-  { label: "Khair un Nisa Hospital", value: "Khair un Nisa Hospital", city: "Faisalabad" },
-  { label: "Madina Teaching Hospital", value: "Madina Teaching Hospital", city: "Faisalabad" },
-  { label: "Maqsooda Zia Hospital", value: "Maqsooda Zia Hospital", city: "Faisalabad" },
-  { label: "Mian Muhammad Trust", value: "Mian Muhammad Trust", city: "Faisalabad" },
-  { label: "Mujahid Hospital", value: "Mujahid Hospital", city: "Faisalabad" },
-  { label: "PINUM Cancer Hospital", value: "PINUM Cancer Hospital", city: "Faisalabad" },
-  { label: "Rathore Hospital", value: "Rathore Hospital", city: "Faisalabad" },
-  { label: "Sughran Siddique Hospital", value: "Sughran Siddique Hospital", city: "Faisalabad" },
-  // JHANG
-  { label: "Haleema Surgical Hospital", value: "Haleema Surgical Hospital", city: "Jhang" },
-  { label: "Haq Bahuu General Hospital", value: "Haq Bahuu General Hospital", city: "Jhang" },
-  { label: "Nighat Medical Complex", value: "Nighat Medical Complex", city: "Jhang" },
-  { label: "Rana Jameel Memorial Hospital", value: "Rana Jameel Memorial Hospital", city: "Jhang" },
-  { label: "Saeed Medical Complex & Anzalina Care", value: "Saeed Medical Complex & Anzalina Care", city: "Jhang" },
-  { label: "Shahbal Poly Clinic", value: "Shahbal Poly Clinic", city: "Jhang" },
-  { label: "Shaheen Infertility & General Hospital", value: "Shaheen Infertility & General Hospital", city: "Jhang" },
-  { label: "Shifa Hospital", value: "Shifa Hospital", city: "Jhang" },
-  // TOBA TEK SINGH
-  { label: "Al Barkat Hospital", value: "Al Barkat Hospital", city: "Toba Tek Singh" },
-  { label: "Al Kareem Orthopedic & Trauma Center", value: "Al Kareem Orthopedic & Trauma Center", city: "Toba Tek Singh" },
-  { label: "Al Noor Eye Clinic Toba Tek Singh", value: "Al Noor Eye Clinic Toba Tek Singh", city: "Toba Tek Singh" },
-  { label: "Al-Sadiq Hospital Kamalia", value: "Al-Sadiq Hospital Kamalia", city: "Toba Tek Singh" },
-  { label: "Athwal Hospital", value: "Athwal Hospital", city: "Toba Tek Singh" },
-  { label: "Munawar Hospital", value: "Munawar Hospital", city: "Toba Tek Singh" },
-  { label: "Sarwar Foundation Hospital, Rajhana", value: "Sarwar Foundation Hospital, Rajhana", city: "Toba Tek Singh" },
-];
-
-// Small inline error text shown beneath a field
 const FieldError = ({ message }) => {
   if (!message) return null;
   return <Text style={styles.fieldError}>{message}</Text>;
@@ -82,9 +39,10 @@ const FieldError = ({ message }) => {
 const RequestDetailsScreen = () => {
   const { isDarkMode } = useTheme();
 
+  const [hospitalsList, setHospitalsList] = useState([]);
   const [bloodType, setBloodType] = useState("");
   const [units_required, setUnitsRequired] = useState("0");
-  const [hospital, setHospital] = useState(null);
+  const [hospital, setHospital] = useState(null); // Now holds target object { id, label, city }
   const [notes, setNotes] = useState("");
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [search, setSearch] = useState("");
@@ -92,7 +50,6 @@ const RequestDetailsScreen = () => {
   const [successMsg, setSuccessMsg] = useState("");
   const [serverError, setServerError] = useState("");
 
-  // Per-field validation errors
   const [fieldErrors, setFieldErrors] = useState({
     bloodType: "",
     units_required: "",
@@ -106,12 +63,33 @@ const RequestDetailsScreen = () => {
 
   const bloodTypes = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
 
-  const filteredHospitals = HOSPITALS.filter((h) =>
+  useEffect(() => {
+    const fetchHospitals = async () => {
+      const { data, error } = await supabase
+        .from("hospitals")
+        .select("id, name, city")
+        .order("city", { ascending: true });
+
+      if (!error && data) {
+        // Map database columns to the component's expected structure
+        const formatted = data.map(h => ({
+          id: h.id,
+          label: h.name,
+          city: h.city
+        }));
+        setHospitalsList(formatted);
+      }
+    };
+
+    fetchHospitals();
+  }, []);
+
+  // Change HOSPITALS.filter to hospitalsList.filter
+  const filteredHospitals = hospitalsList.filter((h) =>
     h.label.toLowerCase().includes(search.toLowerCase()) ||
     h.city.toLowerCase().includes(search.toLowerCase())
   );
 
-  // Clears a single field's error when the user starts interacting
   const clearFieldError = (field) => {
     if (fieldErrors[field]) {
       setFieldErrors((prev) => ({ ...prev, [field]: "" }));
@@ -152,7 +130,7 @@ const RequestDetailsScreen = () => {
         {
           blood_type: bloodType,
           units_required: parseInt(units_required, 10),
-          hospital_name: hospital,
+          hospital_id: hospital.id, // Updated from hospital_name: hospital
           notes: notes.trim() || null,
         },
       ]);
@@ -164,7 +142,7 @@ const RequestDetailsScreen = () => {
         setSuccessMsg("");
         router.push({
           pathname: "/donor-live-map",
-          params: { bloodType, units_required, hospital },
+          params: { bloodType, units_required, hospitalId: hospital.id },
         });
       }, 1500);
     } catch (err) {
@@ -176,7 +154,6 @@ const RequestDetailsScreen = () => {
 
   return (
     <SafeAreaView style={[styles.safeArea, bgStyle]}>
-      {/* Hospital Picker Modal */}
       <Modal
         visible={dropdownVisible}
         transparent
@@ -209,27 +186,27 @@ const RequestDetailsScreen = () => {
 
             <FlatList
               data={filteredHospitals}
-              keyExtractor={(item) => item.value}
+              keyExtractor={(item) => item.id}
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={[
                     styles.hospitalItem,
-                    hospital === item.value && { backgroundColor: isDarkMode ? "#2A1A1A" : "#FFF0F0" },
+                    hospital?.id === item.id && { backgroundColor: isDarkMode ? "#2A1A1A" : "#FFF0F0" },
                   ]}
                   onPress={() => {
-                    setHospital(item.value);
+                    setHospital(item); // Storing the full object context
                     clearFieldError("hospital");
                     setDropdownVisible(false);
                     setSearch("");
                   }}
                 >
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.hospitalName, textPrimary, hospital === item.value && { color: COLORS.primary }]}>
+                    <Text style={[styles.hospitalName, textPrimary, hospital?.id === item.id && { color: COLORS.primary }]}>
                       {item.label}
                     </Text>
                     <Text style={[styles.hospitalCity, textSecondary]}>{item.city}</Text>
                   </View>
-                  {hospital === item.value && (
+                  {hospital?.id === item.id && (
                     <MaterialIcons name="check-circle" size={20} color={COLORS.primary} />
                   )}
                 </TouchableOpacity>
@@ -243,7 +220,6 @@ const RequestDetailsScreen = () => {
         </View>
       </Modal>
 
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
           style={[styles.headerButton, { backgroundColor: surface }]}
@@ -354,7 +330,7 @@ const RequestDetailsScreen = () => {
                 }}
                 numberOfLines={1}
               >
-                {hospital || "Select a hospital..."}
+                {hospital ? hospital.label : "Select a hospital..."}
               </Text>
               <MaterialIcons
                 name="keyboard-arrow-down"
@@ -364,7 +340,7 @@ const RequestDetailsScreen = () => {
             </TouchableOpacity>
             <FieldError message={fieldErrors.hospital} />
 
-            {/* Notes — no validation */}
+            {/* Notes */}
             <Text style={[styles.label, textSecondary]}>Additional Notes</Text>
             <TextInput
               value={notes}
@@ -384,7 +360,7 @@ const RequestDetailsScreen = () => {
               placeholderTextColor={isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary}
             />
 
-            {/* Server error / success banners */}
+            {/* Status Messages */}
             {!!serverError && (
               <View style={styles.messageBox}>
                 <MaterialIcons name="error-outline" size={16} color={COLORS.primary} />
@@ -398,7 +374,6 @@ const RequestDetailsScreen = () => {
               </View>
             )}
 
-            {/* Submit Button */}
             <TouchableOpacity
               style={[styles.primaryButton, { backgroundColor: COLORS.primary, opacity: loading ? 0.7 : 1 }]}
               onPress={handleContinue}
@@ -494,7 +469,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   buttonText: { color: "#FFF", fontSize: 16, fontWeight: "700" },
-  // Modal
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",

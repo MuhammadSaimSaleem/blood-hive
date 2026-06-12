@@ -1,18 +1,18 @@
 import { MaterialIcons } from "@expo/vector-icons";
-import { router, useFocusEffect } from "expo-router";
+import DateTimePicker from "@react-native-community/datetimepicker"; // Imported Picker
 import * as Location from "expo-location";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Modal,
-  Platform,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 import { supabase } from "../lib";
 import {
@@ -24,29 +24,6 @@ import {
   ImpactStatCard,
   UrgentRequestCard,
 } from "./UIComponents";
-
-// ─── helpers ────────────────────────────────────────────────────────────────
-
-const NOTIF_TYPE_META = {
-  blood_request:    { icon: "favorite",               color: "#D42B1F" },
-  donation_match:   { icon: "person-add",             color: "#7ED321" },
-  donor_registered: { icon: "person-add",             color: "#7ED321" },
-  hospital_update:  { icon: "local-hospital",         color: "#1976D2" },
-  urgent_request:   { icon: "notification-important", color: "#F57C00" },
-  reminder:         { icon: "alarm",                  color: "#7B1FA2" },
-  donors_found:     { icon: "location-on",            color: "#7ED321" },
-  donation_saved:   { icon: "volunteer-activism",     color: "#7ED321" },
-};
-
-const formatNotifTime = (isoString) => {
-  const diff = Date.now() - new Date(isoString).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1)  return "Just now";
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24)  return `${hrs}h`;
-  return `${Math.floor(hrs / 24)}d`;
-};
 
 const formatDate = (isoDate) => {
   if (!isoDate) return "N/A";
@@ -111,7 +88,6 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
   const [isScheduleModalVisible, setScheduleModalVisible]   = useState(false);
   const [isHistoryModalVisible,  setHistoryModalVisible]    = useState(false);
   const [isRespondModalVisible,  setRespondModalVisible]    = useState(false);
-  const [isNotifModalVisible,    setNotifModalVisible]      = useState(false);
   const [selectedRequest,        setSelectedRequest]        = useState(null);
   const [selectedSlot,           setSelectedSlot]           = useState(null);
   const [respondStep,            setRespondStep]            = useState(1);
@@ -132,8 +108,12 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
   const [urgentRequests,    setUrgentRequests]    = useState([]);
   const [donationHistory,   setDonationHistory]   = useState([]);
   const [scheduleSlots,     setScheduleSlots]     = useState([]);
-  const [notifications,     setNotifications]     = useState([]);
-  const [unreadNotifs,      setUnreadNotifs]       = useState(0);
+
+  // Date & Time picker native configurations
+  const [pickedDate,       setPickedDate]      = useState(null); // Now stores Date instance
+  const [pickedTime,       setPickedTime]      = useState(null); // Now stores Date instance
+  const [showDatePicker,   setShowDatePicker]  = useState(false);
+  const [showTimePicker,   setShowTimePicker]  = useState(false);
 
   // refs for realtime channels
   const userChannelRef    = useRef(null);
@@ -141,8 +121,49 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
   const schedulesChannelRef = useRef(null);
   const notifsChannelRef  = useRef(null);
 
-  // ── location helper ────────────────────────────────────────────────────────
-  const getAndSaveLocation = useCallback(async () => {
+  // ref for live location watcher (active only while donor is available)
+  const locationWatchRef  = useRef(null);
+  const lastSavedLocRef   = useRef(null); // { latitude, longitude } of last DB write
+
+  // ── location helpers ───────────────────────────────────────────────────────
+
+  /** Haversine distance in metres between two lat/lng pairs. */
+  const haversineMetres = (lat1, lng1, lat2, lng2) => {
+    const R = 6371000;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  /** Write a lat/lng pair to the users table as a PostGIS POINT. */
+  const saveLocationToDb = useCallback(async (latitude, longitude) => {
+    const { error } = await supabase
+      .from("users")
+      .update({ location: `POINT(${longitude} ${latitude})` })
+      .eq("id", userId);
+    if (error) console.error("Failed to save location:", error.message);
+  }, [userId]);
+
+  /** Stop the location watcher (if running) and clear refs. */
+  const stopLocationWatch = useCallback(() => {
+    if (locationWatchRef.current) {
+      locationWatchRef.current.remove();
+      locationWatchRef.current = null;
+    }
+    lastSavedLocRef.current = null;
+  }, []);
+
+  /**
+   * Request permission, do an initial GPS fix, write it to DB,
+   * then start a background watcher that re-writes on every ~50 m move.
+   * Returns false if permission was denied.
+   */
+  const startLocationWatch = useCallback(async () => {
     try {
       const { status: existing } = await Location.getForegroundPermissionsAsync();
       let granted = existing === "granted";
@@ -161,26 +182,43 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
         return false;
       }
 
-      const coords = await Location.getCurrentPositionAsync({
+      // Initial fix — write immediately so the donor appears on the map right away
+      const initial = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
+      const { latitude, longitude } = initial.coords;
+      await saveLocationToDb(latitude, longitude);
+      lastSavedLocRef.current = { latitude, longitude };
 
-      const { latitude, longitude } = coords.coords;
-      // Save as PostGIS geography point — Supabase accepts WKT strings
-      const { error } = await supabase
-        .from("users")
-        .update({ location: `POINT(${longitude} ${latitude})` })
-        .eq("id", userId);
+      // Background watcher — only writes when the donor has moved >50 m
+      // distanceInterval is in metres; timeInterval is a minimum in ms
+      locationWatchRef.current = await Location.watchPositionAsync(
+        {
+          accuracy:         Location.Accuracy.Balanced,
+          distanceInterval: 50,   // at least 50 m movement before firing
+          timeInterval:     30000, // no more often than every 30 s
+        },
+        async (pos) => {
+          const { latitude: newLat, longitude: newLng } = pos.coords;
+          const last = lastSavedLocRef.current;
 
-      if (error) {
-        console.error("Failed to save location:", error.message);
-      }
+          // Extra guard: skip if we somehow haven't moved (double-fires, etc.)
+          if (last) {
+            const moved = haversineMetres(last.latitude, last.longitude, newLat, newLng);
+            if (moved < 50) return;
+          }
+
+          await saveLocationToDb(newLat, newLng);
+          lastSavedLocRef.current = { latitude: newLat, longitude: newLng };
+        }
+      );
+
       return true;
     } catch (err) {
-      console.error("Location error:", err);
+      console.error("Location watch error:", err);
       return false;
     }
-  }, [userId]);
+  }, [saveLocationToDb]);
 
   // ── toggle availability ───────────────────────────────────────────────────
   const handleAvailabilityToggle = useCallback(async (val) => {
@@ -189,14 +227,15 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
 
     try {
       if (val) {
-        // Ask for location when becoming available
-        const ok = await getAndSaveLocation();
+        // Start GPS watcher; get initial fix and begin streaming updates
+        const ok = await startLocationWatch();
         if (!ok) {
           setAvailabilityLoading(false);
           return; // don't enable if location denied
         }
       } else {
-        // Clear location when going unavailable (optional — keeps privacy)
+        // Stop the GPS watcher and clear location from DB (privacy)
+        stopLocationWatch();
         await supabase
           .from("users")
           .update({ location: null })
@@ -205,7 +244,7 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
 
       const { error } = await supabase
         .from("users")
-        .update({ notifications_enabled: val })
+        .update({ notifications_enabled: val, is_available: val })
         .eq("id", userId);
 
       if (error) {
@@ -224,7 +263,7 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
     } finally {
       setAvailabilityLoading(false);
     }
-  }, [userId, getAndSaveLocation]);
+  }, [userId, startLocationWatch, stopLocationWatch]);
 
   // ── respond to urgent request ─────────────────────────────────────────────
   const handleRespond = useCallback((request) => {
@@ -282,61 +321,103 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
     }
   }, [respondStep, userId, selectedRequest]);
 
+  // Picker change handlers
+  const onDateChange = (event, selectedDate) => {
+    setShowDatePicker(false);
+    if (selectedDate) {
+      setPickedDate(selectedDate);
+    }
+  };
+
+  const onTimeChange = (event, selectedTime) => {
+    setShowTimePicker(false);
+    if (selectedTime) {
+      setPickedTime(selectedTime);
+    }
+  };
+
   // ── schedule donation ─────────────────────────────────────────────────────
   const handleScheduleConfirm = useCallback(async () => {
     if (!selectedSlot) {
       Alert.alert("Select a slot", "Please select an available time slot.");
       return;
     }
+    if (!pickedDate || !pickedTime) {
+      Alert.alert("Pick a date & time", "Please select your preferred date and time.");
+      return;
+    }
     if (!userId) return;
     setScheduleLoading(true);
 
+    // Format fields down to strings for database interaction
+    const dateString = pickedDate.toISOString().split("T")[0];
+    const timeString = pickedTime.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
+
     try {
-      const { error } = await supabase.from("donation_schedules").insert({
-        donor_id:         userId,
-        scheduled_date:   selectedSlot.date_iso,
-        scheduled_time:   selectedSlot.time,
-        hospital_name:    selectedSlot.hospital,
-        status:           "confirmed",
-        available_slots:  selectedSlot.slots - 1,
+      const { error } = await supabase.rpc("book_donation_slot", {
+        slot_id:   selectedSlot.id,
+        booker_id: userId,
+        pick_date: dateString,
+        pick_time: timeString,
       });
 
       if (error) {
-        console.error("donation_schedules insert error:", error.message);
-        Alert.alert("Error", "Could not book your appointment. Please try again.");
+        console.error("book_donation_slot error:", error.message);
+        Alert.alert("Error", error.message.includes("No units remaining")
+          ? "Sorry, this request has been fulfilled already."
+          : "Could not book your appointment. Please try again."
+        );
         return;
       }
 
-      // Decrement slots in DB
-      await supabase
-        .from("donation_schedules")
-        .update({ available_slots: selectedSlot.slots - 1 })
-        .eq("id", selectedSlot.id);
-
       setScheduleModalVisible(false);
+      setSelectedSlot(null);
+      setPickedDate(null);
+      setPickedTime(null);
       Alert.alert(
         "Appointment Confirmed 🎉",
-        `Your donation is scheduled for ${selectedSlot.dateLabel} at ${selectedSlot.time} — ${selectedSlot.hospital}.`
+        `Your donation is scheduled for ${dateString} at ${timeString} — ${selectedSlot.hospital}.`
       );
-      setSelectedSlot(null);
     } finally {
       setScheduleLoading(false);
     }
-  }, [selectedSlot, userId]);
+  }, [selectedSlot, pickedDate, pickedTime, userId]);
 
-  // ── mark notifications read ───────────────────────────────────────────────
-  const handleOpenNotifs = useCallback(async () => {
-    setUnreadNotifs(0);
-    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-    setNotifModalVisible(true);
-    if (userId) {
-      await supabase
-        .from("notifications")
-        .update({ is_read: true })
-        .eq("user_id", userId)
-        .eq("is_read", false);
-    }
-  }, [userId]);
+  const fetchScheduleSlots = useCallback(async () => {
+    const today = new Date().toISOString().split("T")[0];
+    const { data, error } = await supabase
+      .from("donation_schedules")
+      .select(`
+        id, scheduled_date, scheduled_time, note, request_id,
+        blood_requests ( id, units_required, units_found, hospitals ( name ) )
+      `)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (error) console.error("schedule slots fetch error:", error.message);
+
+    const slots = (data ?? [])
+      .map(row => {
+        const required  = row.blood_requests?.units_required ?? 0;
+        const found     = row.blood_requests?.units_found    ?? 0;
+        const remaining = required - found;
+        return {
+          id:         row.id,
+          date_iso:   row.scheduled_date,
+          dateLabel:  row.scheduled_date ? formatDate(row.scheduled_date) : "Flexible Date",
+          time:       row.scheduled_time ?? "Any Time",
+          hospital:   row.blood_requests?.hospitals?.name ?? "Unknown Hospital",
+          request_id: row.request_id,
+          remaining,
+          note:       row.note ?? null,
+        };
+      })
+      .filter(row => row.remaining > 0)                                          // only slots with units left
+      .filter(row => !row.date_iso || row.date_iso >= today);
+
+    setScheduleSlots(slots);
+  }, []);
 
   // ── main data fetch + realtime subscriptions ──────────────────────────────
   useFocusEffect(
@@ -361,7 +442,7 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
           // 2. Donation history from donation_schedules (completed ones)
           const { data: schedulesData, error: schedulesError } = await supabase
             .from("donation_schedules")
-            .select("id, scheduled_date, scheduled_time, hospital_name, status, created_at")
+            .select("id, scheduled_date, scheduled_time, status, created_at, note, blood_requests ( hospital_id, hospitals ( name ) )")
             .eq("donor_id", userId)
             .eq("status", "completed")
             .order("scheduled_date", { ascending: false })
@@ -371,9 +452,9 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
           if (schedulesError) console.error("donation_schedules history error:", schedulesError.message);
 
           const history = (schedulesData ?? []).map((row) => ({
-            date:     formatDate(row.scheduled_date),
-            location: row.hospital_name ?? "Unknown",
-            units:    1,
+            date:        formatDate(row.scheduled_date),
+            location:    row.blood_requests?.hospitals?.name ?? "Unknown",
+            units:       1,
             certificate: true,
           }));
 
@@ -393,42 +474,87 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
             setIsAvailable(user?.notifications_enabled ?? false);
             setDonationHistory(history);
           }
+          
+          // 3. Urgent nearby blood requests — filtered by hospital proximity
+          let donorLat = null;
+          let donorLng = null;
 
-          // 3. Urgent nearby blood requests (active, not by current user)
-          const { data: requestsData, error: requestsError } = await supabase
-            .from("blood_requests")
-            .select("id, blood_type, hospital_name, units_required, units_found, status, user_id, created_at, notes")
-            .eq("status", "active")
-            .neq("user_id", userId)
-            .order("created_at", { ascending: false })
-            .limit(10);
+          try {
+            // Select your generated location_json column instead of the raw geography object
+            const { data: locRow } = await supabase
+              .from("users")
+              .select("location_json")
+              .eq("id", userId)
+              .maybeSingle();
 
-          if (cancelled) return;
-          if (requestsError) console.error("blood_requests fetch error:", requestsError.message);
+            // location_json parses directly into an object: { type: "Point", coordinates: [lng, lat] }
+            if (locRow?.location_json) {
+              const geojson = typeof locRow.location_json === 'string' 
+                ? JSON.parse(locRow.location_json) 
+                : locRow.location_json;
 
-          const requests = (requestsData ?? []).map((row) => ({
+              if (geojson?.coordinates) {
+                donorLng = geojson.coordinates[0];
+                donorLat = geojson.coordinates[1];
+                console.log(`📍 Parsed Donor Location from GeoJSON -> Lng: ${donorLng}, Lat: ${donorLat}`);
+              }
+            }
+          } catch (e) {
+            console.warn("Could not read donor location:", e);
+          }
+
+          let requestsData = [];
+          if (donorLat !== null && donorLng !== null) {
+            // Use RPC to get distance-filtered requests
+            const { data: rpcData, error: rpcError } = await supabase
+              .rpc("get_nearby_requests", {
+                donor_lat:  donorLat,
+                donor_lng:  donorLng,
+                radius_km:  25,
+              });
+
+            if (rpcError) console.error("get_nearby_requests error:", rpcError.message);
+            requestsData = (rpcData ?? []).filter((r) => r.user_id !== userId);
+          } else {
+            // Fallback: no location yet, show all active requests without distance
+            const { data, error: requestsError } = await supabase
+              .from("blood_requests")
+              .select(`
+                id, blood_type, units_required, units_found,
+                status, user_id, created_at, notes,
+                hospitals ( name )
+              `)
+              .eq("status", "active")
+              .neq("user_id", userId)
+              .order("created_at", { ascending: false })
+              .limit(10);
+
+            if (requestsError) console.error("blood_requests fallback error:", requestsError.message);
+            requestsData = data ?? [];
+          }
+
+          const requests = requestsData.map((row) => ({
             id:            row.id,
             type:          row.blood_type    ?? "?",
-            hospital:      row.hospital_name ?? "Unknown Hospital",
-            distance:      "Nearby",                          // real distance requires PostGIS query
+            hospital:      row.hospital_name ?? row.hospitals?.name ?? "Unknown Hospital",
+            distance:      row.distance_km != null ? `${row.distance_km} km` : "Nearby",
             unitsNeeded:   (row.units_required ?? 1) - (row.units_found ?? 0),
             urgency:       row.notes?.includes("critical") ? "Critical"
-                         : row.notes?.includes("high")     ? "High"
-                         : "Medium",
+                        : row.notes?.includes("high")     ? "High"
+                        : "Medium",
             requestUserId: row.user_id,
           }));
 
           if (!cancelled) setUrgentRequests(requests);
 
-          // 4. Available schedule slots (future, with slots remaining)
-          const today = new Date().toISOString().split("T")[0];
           const { data: slotsData, error: slotsError } = await supabase
             .from("donation_schedules")
-            .select("id, scheduled_date, scheduled_time, hospital_name, available_slots")
-            .is("donor_id", null)               // open slots have no donor assigned
+            .select(`
+              id, scheduled_date, scheduled_time, available_slots, note, request_id,
+              blood_requests ( hospital_id, hospitals ( name ) )
+            `)
+            .in("status", ["pending", "confirmed"])
             .gt("available_slots", 0)
-            .gte("scheduled_date", today)
-            .order("scheduled_date", { ascending: true })
             .limit(10);
 
           if (cancelled) return;
@@ -437,38 +563,14 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
           const slots = (slotsData ?? []).map((row) => ({
             id:        row.id,
             date_iso:  row.scheduled_date,
-            dateLabel: formatDate(row.scheduled_date),
-            time:      row.scheduled_time   ?? "09:00 AM",
-            hospital:  row.hospital_name    ?? "City Hospital",
-            slots:     row.available_slots  ?? 1,
+            dateLabel: row.scheduled_date ? formatDate(row.scheduled_date) : "Flexible Date",
+            time:      row.scheduled_time ?? "Any Time",
+            hospital:  row.blood_requests?.hospitals?.name ?? "Unknown Hospital",
+            slots:     row.available_slots ?? 1,
+            note:      row.note ?? null,
           }));
 
           if (!cancelled) setScheduleSlots(slots);
-
-          // 5. Notifications
-          const { data: notifsData, error: notifsError } = await supabase
-            .from("notifications")
-            .select("id, type, title, body, is_read, created_at, data")
-            .eq("user_id", userId)
-            .order("created_at", { ascending: false })
-            .limit(20);
-
-          if (cancelled) return;
-          if (!notifsError && notifsData) {
-            const mapped = notifsData.map((row) => ({
-              id:       row.id,
-              icon:     NOTIF_TYPE_META[row.type]?.icon  ?? "notifications",
-              color:    NOTIF_TYPE_META[row.type]?.color ?? COLORS.accentBlue,
-              title:    row.title,
-              subtitle: row.body,
-              time:     formatNotifTime(row.created_at),
-              is_read:  row.is_read,
-            }));
-            if (!cancelled) {
-              setNotifications(mapped);
-              setUnreadNotifs(mapped.filter((n) => !n.is_read).length);
-            }
-          }
 
           // ── Realtime subscriptions ─────────────────────────────────────
           if (!cancelled) {
@@ -482,7 +584,6 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
                 filter: `id=eq.${userId}`,
               }, (payload) => {
                 const u = payload.new;
-                setIsAvailable(u.notifications_enabled ?? false);
                 setDonorProfile((prev) => ({
                   ...prev,
                   bloodType:         u.blood_type         ?? prev.bloodType,
@@ -499,13 +600,25 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
                 event:  "INSERT",
                 schema: "public",
                 table:  "blood_requests",
-              }, (payload) => {
+              }, async (payload) => {
                 const r = payload.new;
                 if (r.status !== "active" || r.user_id === userId) return;
+
+                // Realtime payloads are raw rows — fetch hospital name separately
+                let hospitalName = "Unknown Hospital";
+                if (r.hospital_id) {
+                  const { data: h } = await supabase
+                    .from("hospitals")
+                    .select("name")
+                    .eq("id", r.hospital_id)
+                    .maybeSingle();
+                  hospitalName = h?.name ?? hospitalName;
+                }
+
                 const newReq = {
                   id:            r.id,
                   type:          r.blood_type    ?? "?",
-                  hospital:      r.hospital_name ?? "Unknown Hospital",
+                  hospital:      hospitalName,
                   distance:      "Nearby",
                   unitsNeeded:   (r.units_required ?? 1) - (r.units_found ?? 0),
                   urgency:       r.notes?.includes("critical") ? "Critical"
@@ -538,7 +651,7 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
               }, (payload) => {
                 const s = payload.new;
                 setScheduleSlots((prev) => {
-                  if (s.available_slots <= 0 || s.donor_id) {
+                  if (s.available_slots <= 0 || s.status !== "pending") {
                     return prev.filter((slot) => slot.id !== s.id);
                   }
                   return prev.map((slot) =>
@@ -550,49 +663,37 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
                 event:  "INSERT",
                 schema: "public",
                 table:  "donation_schedules",
-              }, (payload) => {
+              }, async (payload) => {
                 const s = payload.new;
-                if (!s.donor_id && s.available_slots > 0) {
+                if (s.status === "pending" && s.available_slots > 0) {
                   const today2 = new Date().toISOString().split("T")[0];
                   if (s.scheduled_date >= today2) {
+                    // Realtime payloads are raw rows — fetch hospital name via request_id → blood_requests → hospitals
+                    let hospitalName = "City Hospital";
+                    if (s.request_id) {
+                      const { data: reqRow } = await supabase
+                        .from("blood_requests")
+                        .select("hospitals ( name )")
+                        .eq("id", s.request_id)
+                        .maybeSingle();
+                      hospitalName = reqRow?.hospitals?.name ?? hospitalName;
+                    }
+
                     setScheduleSlots((prev) =>
                       [...prev, {
                         id:        s.id,
                         date_iso:  s.scheduled_date,
                         dateLabel: formatDate(s.scheduled_date),
                         time:      s.scheduled_time  ?? "09:00 AM",
-                        hospital:  s.hospital_name   ?? "City Hospital",
+                        hospital:  hospitalName,
                         slots:     s.available_slots ?? 1,
+                        note:      s.note ?? null,
                       }].sort((a, b) => a.date_iso.localeCompare(b.date_iso))
                     );
                   }
                 }
               });
             await schedulesChannelRef.current.subscribe();
-
-            // d. Watch notifications
-            notifsChannelRef.current = supabase
-              .channel(`donor_notifs:${userId}`)
-              .on("postgres_changes", {
-                event:  "INSERT",
-                schema: "public",
-                table:  "notifications",
-                filter: `user_id=eq.${userId}`,
-              }, (payload) => {
-                const r = payload.new;
-                const item = {
-                  id:       r.id,
-                  icon:     NOTIF_TYPE_META[r.type]?.icon  ?? "notifications",
-                  color:    NOTIF_TYPE_META[r.type]?.color ?? COLORS.accentBlue,
-                  title:    r.title,
-                  subtitle: r.body,
-                  time:     formatNotifTime(r.created_at),
-                  is_read:  r.is_read,
-                };
-                setNotifications((prev) => [item, ...prev].slice(0, 20));
-                setUnreadNotifs((prev) => prev + (r.is_read ? 0 : 1));
-              });
-            await notifsChannelRef.current.subscribe();
           }
         } finally {
           if (!cancelled) setIsLoading(false);
@@ -603,6 +704,7 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
 
       return () => {
         cancelled = true;
+        stopLocationWatch();
         [userChannelRef, requestsChannelRef, schedulesChannelRef, notifsChannelRef].forEach((ref) => {
           if (ref.current) {
             supabase.removeChannel(ref.current);
@@ -610,7 +712,7 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
           }
         });
       };
-    }, [userId])
+    }, [userId, stopLocationWatch])
   );
 
   // ── derived values ────────────────────────────────────────────────────────
@@ -623,22 +725,8 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
       <View style={styles.section}>
         <View style={[styles.card, { backgroundColor: surface }]}>
           <View style={styles.cardHeader}>
-            <Text style={[styles.cardLabel, { color: COLORS.primary }]}>Donation Status</Text>
+            <Text style={[styles.cardLabel, { color: COLORS.primary }]}>Current Donation Status</Text>
             <View style={styles.rowBetween}>
-              {/* Notification bell */}
-              <TouchableOpacity style={styles.notifBell} onPress={handleOpenNotifs}>
-                <MaterialIcons
-                  name="notifications"
-                  size={22}
-                  color={isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary}
-                />
-                {unreadNotifs > 0 && (
-                  <View style={styles.notifDot}>
-                    <Text style={styles.notifDotText}>{unreadNotifs}</Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-
               <View style={styles.availabilityRow}>
                 <Text style={[styles.availabilityLabel, { color: isAvailable ? COLORS.accentGreen : "#888" }]}>
                   {isAvailable ? "Available" : "Unavailable"}
@@ -660,14 +748,14 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
           {/* Blood Type & Points Row */}
           <View style={styles.bloodPointsRow}>
             <View>
-              <Text style={[styles.cardTitle, textPrimary]}>Type: {donorProfile.bloodType}</Text>
+              <Text style={[styles.cardTitle, textPrimary]}>Blood Type: {donorProfile.bloodType}</Text>
               <Text style={[styles.bodyText, textSecondary]}>
                 Last Donated: {donorProfile.lastDonation ? formatDate(donorProfile.lastDonation) : "Never"}
               </Text>
             </View>
             <View style={[styles.pointsBadge, { backgroundColor: COLORS.accentGold + "20" }]}>
               <MaterialIcons name="stars" size={16} color={COLORS.accentGold} />
-              <Text style={[styles.pointsText, { color: COLORS.accentGold }]}>{donorProfile.points} pts</Text>
+              <Text style={[styles.pointsText, { color: COLORS.accentGold }]}>{donorProfile.points} Points</Text>
             </View>
           </View>
 
@@ -675,7 +763,12 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
           <EligibilityTimer daysLeft={donorProfile.daysUntilEligible} isDarkMode={isDarkMode} />
 
           {/* Schedule Button */}
-          <TouchableOpacity style={styles.detailsButton} onPress={() => setScheduleModalVisible(true)}>
+          <TouchableOpacity style={styles.detailsButton} onPress={async () => {
+            setScheduleLoading(true);
+            await fetchScheduleSlots();
+            setScheduleLoading(false);
+            setScheduleModalVisible(true);
+          }}>
             <Text style={styles.detailsButtonText}>Schedule a Donation</Text>
             <MaterialIcons name="event" size={18} color="#fff" />
           </TouchableOpacity>
@@ -820,7 +913,7 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
               Select an available time slot:
             </Text>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 260 }}>
               {scheduleSlots.length === 0 ? (
                 <View style={styles.emptyBox}>
                   <MaterialIcons name="event-busy" size={40} color="#ccc" />
@@ -834,30 +927,29 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
                   return (
                     <TouchableOpacity
                       key={slot.id}
-                      style={[
-                        styles.slotCard,
-                        {
-                          backgroundColor: isSelected ? COLORS.primary : (isDarkMode ? COLORS.grayblue : "#F0F5FA"),
-                          borderWidth: isSelected ? 0 : 1,
-                          borderColor: isDarkMode ? "#444" : "#E0E0E0",
-                        },
-                      ]}
-                      onPress={() => setSelectedSlot(slot)}
+                      style={[styles.slotCard, {
+                        backgroundColor: isSelected ? COLORS.primary : (isDarkMode ? COLORS.grayblue : "#F0F5FA"),
+                        borderWidth: isSelected ? 0 : 1,
+                        borderColor: isDarkMode ? "#444" : "#E0E0E0",
+                      }]}
+                      onPress={() => { setSelectedSlot(slot); setPickedDate(null); setPickedTime(null); }}
                     >
                       <View style={{ flex: 1 }}>
                         <Text style={[styles.slotDate, { color: isSelected ? "#fff" : (isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary) }]}>
-                          {slot.dateLabel}
-                        </Text>
-                        <Text style={[styles.slotTime, { color: isSelected ? "rgba(255,255,255,0.85)" : (isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary) }]}>
-                          {slot.time}
-                        </Text>
-                        <Text style={[styles.slotTime, { color: isSelected ? "rgba(255,255,255,0.7)" : (isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary), marginTop: 2 }]}>
                           📍 {slot.hospital}
                         </Text>
+                        <Text style={[styles.slotTime, { color: isSelected ? "rgba(255,255,255,0.85)" : (isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary) }]}>
+                          {slot.dateLabel} · {slot.time}
+                        </Text>
+                        {slot.note ? (
+                          <Text style={[styles.slotTime, { fontStyle: "italic", marginTop: 2, color: isSelected ? "rgba(255,255,255,0.65)" : (isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary) }]}>
+                            {slot.note}
+                          </Text>
+                        ) : null}
                       </View>
                       <View style={[styles.slotAvail, { backgroundColor: isSelected ? "rgba(255,255,255,0.2)" : COLORS.accentGreen + "20" }]}>
                         <Text style={[styles.slotAvailText, { color: isSelected ? "#fff" : COLORS.accentGreen }]}>
-                          {slot.slots} slot{slot.slots > 1 ? "s" : ""} left
+                          {slot.remaining} unit{slot.remaining > 1 ? "s" : ""} left
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -866,10 +958,75 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
               )}
             </ScrollView>
 
+            {/* Date & Time Picker interface */}
+            {selectedSlot && (
+              <View style={{ marginTop: 16, gap: 10 }}>
+                <Text style={[styles.cardLabel, { color: isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary }]}>
+                  YOUR PREFERRED DATE & TIME
+                </Text>
+                
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  {/* Date Selector Trigger Button */}
+                  <TouchableOpacity
+                    onPress={() => setShowDatePicker(true)}
+                    style={[styles.pickerTrigger, { 
+                      borderColor: pickedDate ? COLORS.primary : (isDarkMode ? "#444" : "#ddd"),
+                    }]}
+                  >
+                    <MaterialIcons name="calendar-today" size={16} color={pickedDate ? COLORS.primary : "#aaa"} />
+                    <Text style={{ 
+                      color: pickedDate ? (isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary) : "#aaa",
+                      fontSize: 14 
+                    }}>
+                      {pickedDate ? pickedDate.toLocaleDateString() : "Select Date"}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Time Selector Trigger Button */}
+                  <TouchableOpacity
+                    onPress={() => setShowTimePicker(true)}
+                    style={[styles.pickerTrigger, { 
+                      borderColor: pickedTime ? COLORS.primary : (isDarkMode ? "#444" : "#ddd"),
+                    }]}
+                  >
+                    <MaterialIcons name="access-time" size={16} color={pickedTime ? COLORS.primary : "#aaa"} />
+                    <Text style={{ 
+                      color: pickedTime ? (isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary) : "#aaa",
+                      fontSize: 14 
+                    }}>
+                      {pickedTime ? pickedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Select Time"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Render Native Date Picker */}
+                {showDatePicker && (
+                  <DateTimePicker
+                    value={pickedDate ?? new Date()}
+                    mode="date"
+                    display="default"
+                    minimumDate={new Date()}
+                    onChange={onDateChange}
+                  />
+                )}
+
+                {/* Render Native Time Picker */}
+                {showTimePicker && (
+                  <DateTimePicker
+                    value={pickedTime ?? new Date()}
+                    mode="time"
+                    is24Hour={false}
+                    display="default"
+                    onChange={onTimeChange}
+                  />
+                )}
+              </View>
+            )}
+
             <TouchableOpacity
-              style={[styles.detailsButton, { marginTop: 20, backgroundColor: selectedSlot ? COLORS.primary : "#aaa" }]}
+              style={[styles.detailsButton, { marginTop: 16, backgroundColor: (selectedSlot && pickedDate && pickedTime) ? COLORS.primary : "#aaa" }]}
               onPress={handleScheduleConfirm}
-              disabled={scheduleLoading}
+              disabled={scheduleLoading || !selectedSlot || !pickedDate || !pickedTime}
             >
               {scheduleLoading ? (
                 <ActivityIndicator color="#fff" />
@@ -915,62 +1072,6 @@ const DonorDashboard = ({ isDarkMode, surface, textPrimary, textSecondary, userI
                   <MaterialIcons name="history" size={48} color="#ccc" />
                   <Text style={[styles.bodyText, textSecondary, { marginTop: 12 }]}>No donation history yet.</Text>
                 </View>
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ── Notifications Modal ───────────────────────────────────────────── */}
-      <Modal
-        animationType="slide"
-        transparent
-        visible={isNotifModalVisible}
-        onRequestClose={() => setNotifModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: isDarkMode ? COLORS.surfaceDark : COLORS.backgroundLight }]}>
-            <View style={styles.modalHeader}>
-              <Text style={[styles.sectionTitle, textPrimary]}>Notifications</Text>
-              <TouchableOpacity onPress={() => setNotifModalVisible(false)}>
-                <MaterialIcons name="close" size={24} color={textSecondary.color} />
-              </TouchableOpacity>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {notifications.length === 0 ? (
-                <View style={{ alignItems: "center", paddingVertical: 40 }}>
-                  <MaterialIcons name="notifications-none" size={48} color="#ccc" />
-                  <Text style={[styles.bodyText, textSecondary, { marginTop: 12 }]}>No notifications yet.</Text>
-                </View>
-              ) : (
-                notifications.map((n) => (
-                  <View
-                    key={n.id}
-                    style={[
-                      styles.notifRow,
-                      {
-                        backgroundColor: n.is_read
-                          ? (isDarkMode ? COLORS.grayblue : "#F8F9FA")
-                          : (n.color + "15"),
-                      },
-                    ]}
-                  >
-                    <View style={[styles.notifIconBox, { backgroundColor: n.color + "20" }]}>
-                      <MaterialIcons name={n.icon} size={20} color={n.color} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.notifTitle, { color: isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary }]}>
-                        {n.title}
-                      </Text>
-                      <Text style={[styles.notifSubtitle, { color: isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary }]}>
-                        {n.subtitle}
-                      </Text>
-                    </View>
-                    <Text style={[styles.notifTime, { color: isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary }]}>
-                      {n.time}
-                    </Text>
-                  </View>
-                ))
               )}
             </ScrollView>
           </View>
@@ -1139,6 +1240,18 @@ const styles = StyleSheet.create({
   notifTitle:       { fontSize: 13, fontWeight: "700" },
   notifSubtitle:    { fontSize: 12, lineHeight: 18, marginTop: 2 },
   notifTime:        { fontSize: 11, fontWeight: "600", marginTop: 2 },
+
+  // New Picker UI Styles
+  pickerTrigger: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    height: 48,
+  },
 
   // Modal
   modalOverlay:     { flex: 1, backgroundColor: "rgba(0,0,0,0.5)" },

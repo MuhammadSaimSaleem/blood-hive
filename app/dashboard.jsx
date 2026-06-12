@@ -1,6 +1,6 @@
 import { MaterialIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -29,48 +29,78 @@ const COLORS = {
   textDarkSecondary: "#8E8E93",
 };
 
+// ─── Module-level cache — lives outside the component, survives tab unmounts ───
+export const _profileCache = { userId: null, userName: "", role: "", fetched: false, activeView: "recipient" };
+
 const DashboardScreen = ({ setActiveTab }) => {
   const { isDarkMode } = useTheme();
   const { role, setRole } = useRole();
 
-  const [loading, setLoading] = useState(true);
-  const [userId, setUserId] = useState(null);
-  const [userName, setUserName] = useState("");
+  // Seed from cache so re-mounts are instant (no loading flash)
+  const [loading, setLoading]   = useState(!_profileCache.fetched);
+  const [userId, setUserId]     = useState(_profileCache.userId);
+  const [userName, setUserName] = useState(_profileCache.userName);
+
   const [currentRequestActive, setCurrentRequestActive] = useState(false);
-
-  const normalisedRole = (role ?? "").toLowerCase();
-  const isDonor = normalisedRole === "donor";
-  const isRecipient = normalisedRole === "recipient";
-
-  const bgStyle = isDarkMode ? styles.darkContainer : styles.lightContainer;
-  const textPrimary = isDarkMode ? styles.textPrimaryDark : styles.textPrimaryLight;
-  const textSecondary = isDarkMode ? styles.textSecondaryDark : styles.textSecondaryLight;
-  const surface = isDarkMode ? COLORS.surfaceDark : COLORS.surfaceLight;
+  const [activeView, setActiveView] = useState(_profileCache.activeView);
 
   useEffect(() => {
+    if (_profileCache.fetched && _profileCache.role) {
+      setRole(_profileCache.role);
+    }
+  }, [setRole]);
+
+  // Survives tab switches / remounts of RecipientDashboard
+  const recipientCache = useRef({
+    recipientData:     null,
+    requestHistory:    null,
+    dashNotifications: null,
+    donorActivity:     null,
+    allDonorActivity:  null,
+  });
+
+  const normalisedRole = (role ?? "").toLowerCase();
+  const isDonor     = normalisedRole === "donor";
+  const isRecipient = normalisedRole === "recipient";
+  const isBoth      = normalisedRole === "both";
+
+  const showDonor     = isDonor     || (isBoth && activeView === "donor");
+  const showRecipient = isRecipient || (isBoth && activeView === "recipient");
+
+  const bgStyle      = isDarkMode ? styles.darkContainer    : styles.lightContainer;
+  const textPrimary  = isDarkMode ? styles.textPrimaryDark  : styles.textPrimaryLight;
+  const textSecondary = isDarkMode ? styles.textSecondaryDark : styles.textSecondaryLight;
+  const surface      = isDarkMode ? COLORS.surfaceDark      : COLORS.surfaceLight;
+
+  useEffect(() => {
+    // Already fetched in a previous mount — skip entirely
+    if (_profileCache.fetched) return;
+
     const fetchUserProfile = async () => {
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
-
         if (authError) throw authError;
-        if (!user) {
-          router.replace("/login");
-          return;
-        }
-
-        setUserId(user.id);
+        if (!user) { router.replace("/login"); return; }
 
         const { data: profile, error: profileError } = await supabase
-          .from("users")            
-          .select("role, full_name") 
+          .from("users")
+          .select("role, full_name")
           .eq("id", user.id)
           .single();
-
         if (profileError) throw profileError;
 
-        if (profile?.role) setRole(profile.role.toLowerCase());
-        if (profile?.full_name) setUserName(profile.full_name.split(" ")[0]);
-        
+        const resolvedRole = profile?.role?.toLowerCase() ?? "";
+        const resolvedName = profile?.full_name?.split(" ")[0] ?? "";
+
+        // Write to module cache before setting state
+        _profileCache.userId   = user.id;
+        _profileCache.userName = resolvedName;
+        _profileCache.role     = resolvedRole;
+        _profileCache.fetched  = true;
+
+        setUserId(user.id);
+        setUserName(resolvedName);
+        if (resolvedRole) setRole(resolvedRole);
       } catch (err) {
         console.error("Error fetching user profile:", err?.message ?? err);
       } finally {
@@ -84,27 +114,19 @@ const DashboardScreen = ({ setActiveTab }) => {
   useEffect(() => {
     if (Platform.OS !== "android") return;
     let lastPressTime = 0;
-
     const backAction = () => {
       const now = Date.now();
-      if (now - lastPressTime < 2000) {
-        BackHandler.exitApp();
-        return true;
-      }
+      if (now - lastPressTime < 2000) { BackHandler.exitApp(); return true; }
       lastPressTime = now;
       ToastAndroid.show("Press back again to exit", ToastAndroid.SHORT);
       return true;
     };
-
     const subscription = BackHandler.addEventListener("hardwareBackPress", backAction);
     return () => subscription.remove();
   }, []);
 
   const handleFabPress = () => {
-    if (isDonor) {
-      router.push("/find_requests");
-      return;
-    }
+    if (showDonor) { router.push("/find_requests"); return; }
     if (currentRequestActive) {
       Alert.alert(
         "Active Request",
@@ -115,17 +137,6 @@ const DashboardScreen = ({ setActiveTab }) => {
     router.push("/create_request");
   };
 
-  if (loading) {
-    return (
-      <View style={[styles.safeArea, bgStyle, styles.centered]}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={[{ marginTop: 10 }, textSecondary]}>
-          Loading Dashboard…
-        </Text>
-      </View>
-    );
-  }
-
   return (
     <View style={[styles.safeArea, bgStyle]}>
       <View style={{ flex: 1 }}>
@@ -135,9 +146,12 @@ const DashboardScreen = ({ setActiveTab }) => {
               Hello, {userName || "there"} 👋
             </Text>
             <Text style={[styles.title, textPrimary]}>
-              {normalisedRole
-                ? normalisedRole.charAt(0).toUpperCase() + normalisedRole.slice(1)
-                : "My"}{" "}
+              {isBoth
+                ? activeView.charAt(0).toUpperCase() + activeView.slice(1)
+                : normalisedRole
+                  ? normalisedRole.charAt(0).toUpperCase() + normalisedRole.slice(1)
+                  : "My"
+              }{" "}
               Dashboard
             </Text>
           </View>
@@ -149,10 +163,28 @@ const DashboardScreen = ({ setActiveTab }) => {
           >
             <MaterialIcons
               name="notifications-none"
-              size={24}
+              size={18}
               color={isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary}
             />
           </TouchableOpacity>
+
+          {isBoth && (
+            <TouchableOpacity
+              style={[styles.toggleBtn, { backgroundColor: surface }]}
+              onPress={() => setActiveView(v => {
+                const next = v === "recipient" ? "donor" : "recipient";
+                _profileCache.activeView = next;
+                return next;
+              })}
+              accessibilityLabel={`Switch to ${activeView === "recipient" ? "donor" : "recipient"} dashboard`}
+            >
+              <MaterialIcons
+                name="swap-horiz"
+                size={18}
+                color={isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary}
+              />
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             style={[styles.iconBtn, { backgroundColor: surface, marginLeft: 10 }]}
@@ -161,53 +193,62 @@ const DashboardScreen = ({ setActiveTab }) => {
           >
             <MaterialIcons
               name="person"
-              size={24}
+              size={18}
               color={isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary}
             />
           </TouchableOpacity>
         </View>
 
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ paddingBottom: 120 }}
-          showsVerticalScrollIndicator={false}
-        >
-          {!isDonor && !isRecipient && (
-            <View style={styles.noRoleContainer}>
-              <MaterialIcons
-                name="error-outline"
-                size={40}
-                color={isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary}
+        {/* Inline spinner — only on very first load, header stays visible */}
+        {loading ? (
+          <View style={styles.centered}>
+            <ActivityIndicator size="large" color={COLORS.primary} />
+            <Text style={[{ marginTop: 10 }, textSecondary]}>Loading Dashboard…</Text>
+          </View>
+        ) : (
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{ paddingBottom: 120 }}
+            showsVerticalScrollIndicator={false}
+          >
+            {!isDonor && !isRecipient && !isBoth && (
+              <View style={styles.noRoleContainer}>
+                <MaterialIcons
+                  name="error-outline"
+                  size={40}
+                  color={isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary}
+                />
+                <Text style={[styles.noRoleText, textSecondary]}>
+                  Your account role could not be determined.{"\n"}
+                  Please contact support.
+                </Text>
+              </View>
+            )}
+
+            {showRecipient && (
+              <RecipientDashboard
+                isDarkMode={isDarkMode}
+                surface={surface}
+                textPrimary={textPrimary}
+                textSecondary={textSecondary}
+                currentRequestActive={currentRequestActive}
+                setCurrentRequestActive={setCurrentRequestActive}
+                userId={userId}
+                cache={recipientCache}
               />
-              <Text style={[styles.noRoleText, textSecondary]}>
-                Your account role could not be determined.{"\n"}
-                Please contact support.
-              </Text>
-            </View>
-          )}
+            )}
 
-          {isRecipient && (
-            <RecipientDashboard
-              isDarkMode={isDarkMode}
-              surface={surface}
-              textPrimary={textPrimary}
-              textSecondary={textSecondary}
-              currentRequestActive={currentRequestActive}
-              setCurrentRequestActive={setCurrentRequestActive}
-              userId={userId}           
-            />
-          )}
-
-          {isDonor && (
-            <DonorDashboard
-              isDarkMode={isDarkMode}
-              surface={surface}
-              textPrimary={textPrimary}
-              textSecondary={textSecondary}
-              userId={userId}           
-            />
-          )}
-        </ScrollView>
+            {showDonor && (
+              <DonorDashboard
+                isDarkMode={isDarkMode}
+                surface={surface}
+                textPrimary={textPrimary}
+                textSecondary={textSecondary}
+                userId={userId}
+              />
+            )}
+          </ScrollView>
+        )}
       </View>
 
       <TouchableOpacity
@@ -227,7 +268,7 @@ const DashboardScreen = ({ setActiveTab }) => {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  centered: { justifyContent: "center", alignItems: "center" },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center" },
 
   lightContainer: { backgroundColor: COLORS.backgroundLight },
   darkContainer:  { backgroundColor: COLORS.backgroundDark  },
@@ -242,7 +283,7 @@ const styles = StyleSheet.create({
   },
 
   welcomeText: { fontSize: 14, fontWeight: "500" },
-  title: { fontSize: 24, fontWeight: "800" },
+  title: { fontSize: 22, fontWeight: "800" },
 
   textPrimaryLight:   { color: COLORS.textLightPrimary   },
   textSecondaryLight: { color: COLORS.textLightSecondary },
@@ -250,27 +291,27 @@ const styles = StyleSheet.create({
   textSecondaryDark:  { color: COLORS.textDarkSecondary  },
 
   iconBtn: {
-    width: 44,
-    height: 44,
+    width: 40,
+    height: 40,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
 
   fab: {
-    position:       "absolute",
-    bottom:         28,
-    right:          24,
-    width:          56,
-    height:         56,
-    borderRadius:   28,
+    position:        "absolute",
+    bottom:          28,
+    right:           24,
+    width:           56,
+    height:          56,
+    borderRadius:    28,
     backgroundColor: COLORS.primary,
-    alignItems:     "center",
-    justifyContent: "center",
-    shadowColor:    "#000",
-    shadowOpacity:  0.25,
-    shadowRadius:   8,
-    elevation:      6,
+    alignItems:      "center",
+    justifyContent:  "center",
+    shadowColor:     "#000",
+    shadowOpacity:   0.25,
+    shadowRadius:    8,
+    elevation:       6,
   },
 
   noRoleContainer: {
@@ -283,6 +324,19 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: "center",
     lineHeight: 22,
+  },
+  toggleBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    height: 44,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    gap: 4,
+    marginLeft: 10,
+  },
+  toggleBtnText: {
+    fontSize: 12,
+    fontWeight: "600",
   },
 });
 

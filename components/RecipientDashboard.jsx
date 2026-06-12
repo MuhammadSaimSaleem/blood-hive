@@ -73,13 +73,11 @@ const DONOR_STATUS_META = {
 
 const mapDbRowToState = (row) => ({
   bloodType: row.blood_type ?? "O+",
-  hospital: row.hospital_name ?? "",
+  hospital: row.hospitals?.name ?? "",
   hospitalPhone: row.hospital_phone ?? null,
   unitsRequired: row.units_required ?? 1,
   unitsFound: row.units_found ?? 0,
   status: row.status ?? "active",
-  isCompleted: row.is_completed ?? false,
-  isDeleted: row.is_deleted ?? false,
   matches: row.matches ?? 0,
   nearbyBanks: row.nearby_banks ?? 0,
   donorsNotified: row.donors_notified ?? 0,
@@ -131,6 +129,7 @@ const RecipientDashboard = ({
   currentRequestActive,
   setCurrentRequestActive,
   userId,
+  cache,
 }) => {
   // ── Modals ────────────────────────────────────────────────────────────────
   const [isEditModalVisible,      setEditModalVisible]      = useState(false);
@@ -140,8 +139,6 @@ const RecipientDashboard = ({
   const [isBanksModalVisible,      setBanksModalVisible]      = useState(false);
   const [isDonorActivityModalVisible, setDonorActivityModalVisible] = useState(false);
 
-  // ── Notification state ────────────────────────────────────────────────────
-  const [unreadNotifs,      setUnreadNotifs]      = useState(0);
   const [dashNotifications, setDashNotifications] = useState([]);
 
   // ── Request state ─────────────────────────────────────────────────────────
@@ -226,7 +223,7 @@ const RecipientDashboard = ({
     if (userId && recipientData.requestId) {
       const { error } = await supabase
         .from("blood_requests")
-        .update({ status: "completed", is_completed: true, units_found: unitsRequired })
+        .update({ status: "completed", units_found: unitsRequired })
         .eq("id", recipientData.requestId)
         .eq("user_id", userId);
 
@@ -242,7 +239,7 @@ const RecipientDashboard = ({
     if (!userId || !recipientData.requestId) return;
     const { error } = await supabase
       .from("blood_requests")
-      .update({ status: "deleted", is_deleted: true })
+      .update({ status: "deleted"})
       .eq("id", recipientData.requestId)
       .eq("user_id", userId);
 
@@ -394,17 +391,21 @@ const RecipientDashboard = ({
         return;
       }
 
-      setBloodBanks(
-        (data ?? []).map((b) => ({
-          id: b.id,
-          name: b.name,
-          distance: b.distance_km != null ? `${b.distance_km} km` : "N/A",
-          phone: b.phone,
-          address: b.address,
-          available: b.is_available ?? false,
-          availableUnits: b.available_units ?? 0,
-        }))
-      );
+      const mapped = (data ?? []).map((b) => ({
+        id: b.id,
+        name: b.name,
+        distance: b.distance_km != null ? `${b.distance_km} km` : "N/A",
+        phone: b.phone,
+        address: b.address,
+        available: b.is_available ?? false,
+        availableUnits: b.available_units ?? 0,
+      }));
+
+      setBloodBanks(mapped);
+
+      // ✅ Sync the stat counter with the actual count
+      setRecipientData((prev) => ({ ...prev, nearbyBanks: mapped.length }));
+
     } finally {
       setBloodBanksLoading(false);
     }
@@ -469,10 +470,17 @@ const RecipientDashboard = ({
         });
 
         if (append) {
-          setAllDonorActivity((prev) => [...prev, ...mapped]);
+          setAllDonorActivity((prev) => {
+            const updated = [...prev, ...mapped];
+            cache.current.allDonorActivity = updated;
+            return updated;
+          });
         } else {
           setAllDonorActivity(mapped);
-          setDonorActivity(mapped.slice(0, 4)); // preview: top 4
+          cache.current.allDonorActivity = mapped;
+          const preview = mapped.slice(0, 4);
+          setDonorActivity(preview); // preview: top 4
+          cache.current.donorActivity = preview;
         }
 
         setDonorActivityHasMore((count ?? 0) > (page + 1) * DONOR_PAGE_SIZE);
@@ -481,7 +489,7 @@ const RecipientDashboard = ({
         setDonorActivityLoading(false);
       }
     },
-    []
+    [cache]
   );
 
   const handleLoadMoreDonors = useCallback(() => {
@@ -525,12 +533,24 @@ const RecipientDashboard = ({
       let cancelled      = false;
 
       const run = async () => {
-        setIsLoading(true);
+        // ── Instant hydration from cache (no loader flicker) ─────────────────
+        const hasCachedData = cache.current.recipientData !== null;
+        if (hasCachedData) {
+          setRecipientData(cache.current.recipientData);
+          setCurrentRequestActive(cache.current.recipientData.status === "active" && !cache.current.recipientData.isDeleted);
+          if (cache.current.requestHistory)    setRequestHistory(cache.current.requestHistory);
+          if (cache.current.dashNotifications) setDashNotifications(cache.current.dashNotifications);
+          if (cache.current.donorActivity)     setDonorActivity(cache.current.donorActivity);
+          if (cache.current.allDonorActivity)  setAllDonorActivity(cache.current.allDonorActivity);
+        } else {
+          setIsLoading(true);
+        }
+
         try {
           // ── Active blood request ──────────────────────────────────────────
           const { data, error } = await supabase
             .from("blood_requests")
-            .select("*")
+            .select("*, hospitals (name)")
             .eq("user_id", userId)
             .eq("status", "active")
             .order("created_at", { ascending: false })
@@ -541,16 +561,30 @@ const RecipientDashboard = ({
 
           if (error) {
             console.error("Error fetching active request:", error.message);
-            setCurrentRequestActive(false);
+            if (!hasCachedData) setCurrentRequestActive(false);
             return;
           }
 
           if (data) {
+            const mappedData = mapDbRowToState(data);
             setCurrentRequestActive(true);
-            setRecipientData(mapDbRowToState(data));
+            setRecipientData(mappedData);
             setEditUnits(String(data.units_required ?? 1));
             setEditUnitsFound(String(data.units_found ?? 0));
             setSelectedBloodType(data.blood_type ?? "O+");
+            cache.current.recipientData = mappedData;
+
+            const { count: banksCount, error: banksCountErr } = await supabase
+              .from("blood_banks")
+              .select("id", { count: "exact", head: true });
+
+            if (!banksCountErr && banksCount != null) {
+              setRecipientData((prev) => {
+                const updated = { ...prev, nearbyBanks: banksCount };
+                cache.current.recipientData = updated;
+                return updated;
+              });
+            }
 
             // Fetch donor activity for this request
             if (!cancelled) fetchDonorActivity(data.id, 0, false);
@@ -569,17 +603,19 @@ const RecipientDashboard = ({
                   },
                   (payload) => {
                     const u = payload.new;
-                    setRecipientData((prev) => ({
-                      ...prev,
-                      unitsFound:      u.units_found      ?? prev.unitsFound,
-                      unitsRequired:   u.units_required   ?? prev.unitsRequired,
-                      status:          u.status           ?? prev.status,
-                      isCompleted:     u.is_completed     ?? prev.isCompleted,
-                      isDeleted:       u.is_deleted       ?? prev.isDeleted,
-                      matches:         u.matches          ?? prev.matches,
-                      nearbyBanks:     u.nearby_banks     ?? prev.nearbyBanks,
-                      donorsNotified:  u.donors_notified  ?? prev.donorsNotified,
-                    }));
+                    setRecipientData((prev) => {
+                      const updated = {
+                        ...prev,
+                        unitsFound:      u.units_found      ?? prev.unitsFound,
+                        unitsRequired:   u.units_required   ?? prev.unitsRequired,
+                        status:          u.status           ?? prev.status,
+                        matches:         u.matches          ?? prev.matches,
+                        nearbyBanks:     u.nearby_banks     ?? prev.nearbyBanks,
+                        donorsNotified:  u.donors_notified  ?? prev.donorsNotified,
+                      };
+                      cache.current.recipientData = updated;
+                      return updated;
+                    });
                   }
                 );
               await channel.subscribe();
@@ -606,6 +642,7 @@ const RecipientDashboard = ({
             }
           } else {
             setCurrentRequestActive(false);
+            cache.current.recipientData = null;
           }
 
           // ── Request history ───────────────────────────────────────────────
@@ -613,15 +650,14 @@ const RecipientDashboard = ({
             .from("blood_requests")
             .select("id, request_id, blood_type, units_required, created_at, status")
             .eq("user_id", userId)
-            .in("status", ["completed", "cancelled"])
+            .in("status", ["completed", 'deleted'])
             .order("created_at", { ascending: false })
             .limit(10);
 
           if (cancelled) return;
 
           if (!historyError && historyData) {
-            setRequestHistory(
-              historyData.map((row) => ({
+            const mapped = historyData.map((row) => ({
                 id:        row.id,
                 label:     row.request_id ?? row.id,
                 bloodType: row.blood_type,
@@ -632,8 +668,9 @@ const RecipientDashboard = ({
                   year: "numeric",
                 }),
                 status: row.status === "completed" ? "Completed" : "Cancelled",
-              }))
-            );
+              }));
+            setRequestHistory(mapped);
+            cache.current.requestHistory = mapped;
           }
 
           // ── Notifications ─────────────────────────────────────────────────
@@ -657,7 +694,7 @@ const RecipientDashboard = ({
               is_read:  row.is_read,
             }));
             setDashNotifications(mapped);
-            setUnreadNotifs(mapped.filter((n) => !n.is_read).length);
+            cache.current.dashNotifications = mapped;
 
             if (!cancelled) {
               notifsChannel = supabase
@@ -681,8 +718,11 @@ const RecipientDashboard = ({
                       time:     formatNotifTime(r.created_at),
                       is_read:  r.is_read,
                     };
-                    setDashNotifications((prev) => [item, ...prev].slice(0, 20));
-                    setUnreadNotifs((prev) => prev + (r.is_read ? 0 : 1));
+                    setDashNotifications((prev) => {
+                      const updated = [item, ...prev].slice(0, 20);
+                      cache.current.dashNotifications = updated;
+                      return updated;
+                    });
                   }
                 );
               await notifsChannel.subscribe();
@@ -701,12 +741,9 @@ const RecipientDashboard = ({
         if (notifsChannel) { supabase.removeChannel(notifsChannel); notifsChannel = null; }
         if (donorChannel)  { supabase.removeChannel(donorChannel);  donorChannel  = null; }
       };
-    }, [userId, setCurrentRequestActive])
+    }, [userId, cache, setCurrentRequestActive, fetchDonorActivity])
   );
 
-  // ─────────────────────────────────────────────────────────────────────────
-  //  RENDER
-  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <>
@@ -766,39 +803,6 @@ const RecipientDashboard = ({
                       {recipientData.isCompleted ? "Completed" : "Finding Donors"}
                     </Text>
                   </View>
-
-                  <TouchableOpacity
-                    style={styles.notifBell}
-                    onPress={async () => {
-                      setUnreadNotifs(0);
-                      setDashNotifications((prev) =>
-                        prev.map((n) => ({ ...n, is_read: true }))
-                      );
-                      setNotifModalVisible(true);
-                      if (userId) {
-                        await supabase
-                          .from("notifications")
-                          .update({ is_read: true })
-                          .eq("user_id", userId)
-                          .eq("is_read", false);
-                      }
-                    }}
-                  >
-                    <MaterialIcons
-                      name="notifications"
-                      size={22}
-                      color={
-                        isDarkMode
-                          ? COLORS.textDarkPrimary
-                          : COLORS.textLightPrimary
-                      }
-                    />
-                    {unreadNotifs > 0 && (
-                      <View style={styles.notifDot}>
-                        <Text style={styles.notifDotText}>{unreadNotifs}</Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -1814,12 +1818,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   notifDotText:    { color: "#fff", fontSize: 9, fontWeight: "800" },
-  liveRow:         { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 10 },
+  liveRow:         { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10 },
   findingDonorsText: {
     fontSize: 12,
     fontWeight: "700",
     backgroundColor: COLORS.lightGreen,
-    borderRadius: 10,
+    borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 4,
     color: COLORS.accentGreen,

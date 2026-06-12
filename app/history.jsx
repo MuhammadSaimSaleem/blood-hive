@@ -1,5 +1,4 @@
 import { MaterialIcons } from "@expo/vector-icons";
-import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -73,21 +72,38 @@ const HistoryScreen = ({ setActiveTab }) => {
         if (!session || !isMounted) return;
 
         const { data, error } = await supabase
-          .from("activity_logs")
-          .select("id, action, description, metadata, created_at")
+          .from("blood_requests")
+          .select("id, request_id, blood_type, units_required, hospital_id, created_at, status, hospitals ( name )")
           .eq("user_id", session.user.id)
+          .in("status", ["completed", "deleted"])
           .order("created_at", { ascending: false })
           .limit(50);
 
         if (!isMounted) return;
 
         if (error) {
-          console.error("Failed to fetch activity logs:", error.message);
+          console.error("Failed to fetch history:", error.message);
           setHasError(true);
           return;
         }
 
-        setLogs(data ?? []);
+        // Map blood_requests rows into the same shape the render expects
+        setLogs(
+          (data ?? []).map((row) => ({
+            id: row.id,
+            action:
+              row.status === "completed"
+                ? "completed_blood_request" : "cancelled_blood_request",
+            // 2. Updated to safely extract the nested hospital name
+            description: `${row.blood_type} Blood Request at ${row.hospitals?.name || "unknown hospital"}`,
+            metadata: {
+              blood_type: row.blood_type,
+              units: row.units_required,
+              request_id: row.request_id ?? row.id,
+            },
+            created_at: row.created_at,
+          }))
+        );
       } finally {
         if (isMounted) setIsLoading(false);
       }
@@ -147,38 +163,73 @@ const HistoryScreen = ({ setActiveTab }) => {
               </Text>
             </View>
           ) : (
-            logs.map((log) => {
+            // Replace the logs.map(...) block in the ScrollView with this:
+            logs.map((log, index) => {
               const meta = ACTION_META[log.action] ?? DEFAULT_META;
+              const statusLabel = log.action === "completed_blood_request" ? "Completed" : "Cancelled";
+
               return (
-                <View key={log.id} style={[styles.card, { backgroundColor: surface }]}>
-                  <View style={styles.historyRow}>
-                    <View
-                      style={[
-                        styles.historyIconWrap,
-                        { backgroundColor: `${meta.color}15` },
-                      ]}
-                    >
-                      <MaterialIcons name={meta.icon} size={22} color={meta.color} />
+                <View
+                  key={log.id}
+                  style={[
+                    styles.card,
+                    { backgroundColor: surface, borderLeftColor: meta.color },
+                  ]}
+                >
+                  {/* Top row: icon + status badge + date */}
+                  <View style={styles.cardTopRow}>
+                    <View style={[styles.iconCircle, { backgroundColor: `${meta.color}18` }]}>
+                      <MaterialIcons name={meta.icon} size={20} color={meta.color} />
                     </View>
 
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.cardTitle, textPrimary]}>
-                        {log.description}
-                      </Text>
-                      {log.metadata?.blood_type && (
-                        <Text style={[styles.metaTag, { color: meta.color }]}>
-                          Blood Type: {log.metadata.blood_type}
-                        </Text>
-                      )}
-                      {log.metadata?.units && (
-                        <Text style={[styles.metaTag, { color: meta.color }]}>
-                          Units: {log.metadata.units}
-                        </Text>
-                      )}
-                      <Text style={[styles.dateText, { color: meta.color }]}>
-                        {formatDate(log.created_at)}
+                    <View style={[styles.statusBadge, { backgroundColor: `${meta.color}18` }]}>
+                      <View style={[styles.statusDot, { backgroundColor: meta.color }]} />
+                      <Text style={[styles.statusBadgeText, { color: meta.color }]}>
+                        {statusLabel}
                       </Text>
                     </View>
+
+                    <Text style={[styles.dateText, textSecondary]}>{formatDate(log.created_at)}</Text>
+                  </View>
+
+                  {/* Description */}
+                  <Text style={[styles.cardTitle, textPrimary]} numberOfLines={2}>
+                    {log.description}
+                  </Text>
+
+                  {/* Divider */}
+                  <View style={[styles.divider, { backgroundColor: isDarkMode ? "#ffffff10" : "#00000008" }]} />
+
+                  {/* Meta chips */}
+                  <View style={styles.chipsRow}>
+                    {log.metadata?.blood_type && (
+                      <View style={[styles.chip, { backgroundColor: `${meta.color}12` }]}>
+                        <MaterialIcons name="opacity" size={12} color={meta.color} />
+                        <Text style={[styles.chipText, { color: meta.color }]}>
+                          {log.metadata.blood_type}
+                        </Text>
+                      </View>
+                    )}
+                    {log.metadata?.units && (
+                      <View style={[styles.chip, { backgroundColor: `${meta.color}12` }]}>
+                        <MaterialIcons name="water-drop" size={12} color={meta.color} />
+                        <Text style={[styles.chipText, { color: meta.color }]}>
+                          {log.metadata.units} {log.metadata.units === 1 ? "unit" : "units"}
+                        </Text>
+                      </View>
+                    )}
+                    {log.metadata?.request_id && (
+                      <View style={[styles.chip, { backgroundColor: isDarkMode ? "#ffffff0a" : "#0000000a" }]}>
+                        <MaterialIcons
+                          name="tag"
+                          size={12}
+                          color={isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary}
+                        />
+                        <Text style={[styles.chipText, textSecondary]} numberOfLines={1}>
+                          {String(log.metadata.request_id)}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 </View>
               );
@@ -208,25 +259,72 @@ const styles = StyleSheet.create({
   section: { padding: 16 },
 
   card: {
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 16,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    gap: 8,
-    marginBottom: 14,
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    gap: 10,
   },
-  historyRow:     { flexDirection: "row", gap: 12, alignItems: "flex-start" },
-  historyIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 9999,
+  cardTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  iconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
   },
-  cardTitle: { fontSize: 15, fontWeight: "700", lineHeight: 20 },
-  metaTag:   { fontSize: 12, fontWeight: "600", marginTop: 4 },
-  dateText:  { fontSize: 13, fontWeight: "600", marginTop: 8 },
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 20,
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
+  dateText: {
+    fontSize: 12,
+    fontWeight: "500",
+    marginLeft: "auto",
+  },
+  cardTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 20,
+  },
+  divider: {
+    height: 1,
+  },
+  chipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  chipText: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
 
   centeredState: {
     alignItems: "center",

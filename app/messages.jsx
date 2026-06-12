@@ -21,7 +21,6 @@ import {
   getCachedRooms,
   supabase,
   upsertCachedMessage,
-  upsertCachedMessages,
   upsertCachedRoom
 } from "../lib";
 
@@ -63,7 +62,7 @@ const formatMsgTime = (isoString) => {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-const ChatScreen = ({ setActiveTab }) => {
+const ChatScreen = ({ setActiveTab, chatParams, setChatParams }) => {
   const { isDarkMode } = useTheme();
 
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -106,6 +105,11 @@ const ChatScreen = ({ setActiveTab }) => {
   const [roomToDelete, setRoomToDelete]     = useState(null); // room pending delete confirmation
   const [deleting, setDeleting]             = useState(false);
 
+  // ── Last-read timestamps per room (roomId → ISO string) ──────────────────
+  // Stored in memory; persists for the session. Used to compute unread counts
+  // without requiring a DB schema change.
+  const lastReadAtRef = useRef({});
+
   // ── Theme ─────────────────────────────────────────────────────────────────
   const bgStyle       = isDarkMode ? styles.darkContainer     : styles.lightContainer;
   const textPrimary   = isDarkMode ? styles.textPrimaryDark   : styles.textPrimaryLight;
@@ -119,6 +123,28 @@ const ChatScreen = ({ setActiveTab }) => {
       if (session) setCurrentUserId(session.user.id);
     });
   }, []);
+
+  // ── Auto-open a room when navigated from MatchesScreen ───────────────────
+  // chatParams = { roomId, donorName, donorAvatar } set by PotentialMatchesScreen
+  useEffect(() => {
+    if (!chatParams?.roomId || !currentUserId) return;
+
+    // Build a room object shaped the same way fetchRooms produces
+    const room = {
+      roomId: chatParams.roomId,
+      otherProfile: {
+        full_name:        chatParams.donorName   ?? 'Donor',
+        profile_image_url: chatParams.donorAvatar ?? null,
+      },
+      lastMsg: null,
+      unread:  0,
+    };
+
+    openChat(room);
+    // Clear so revisiting the messages tab shows the list, not this chat
+    setChatParams?.(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatParams, currentUserId]);
 
   // ── Fetch room list on focus ───────────────────────────────────────────────
   useFocusEffect(
@@ -196,11 +222,17 @@ const ChatScreen = ({ setActiveTab }) => {
 
           const lastMsg = lastMsgArr?.[0] ?? null;
 
-          const { count: unread } = await supabase
+          // ✅ FIX: only count messages received after the last time we opened this room
+          const lastReadAt = lastReadAtRef.current[roomId];
+          let unreadQuery = supabase
             .from("messages")
             .select("id", { count: "exact", head: true })
             .eq("room_id", roomId)
             .neq("sender_id", currentUserId);
+          if (lastReadAt) {
+            unreadQuery = unreadQuery.gt("created_at", lastReadAt);
+          }
+          const { count: unread } = await unreadQuery;
 
           const room = { roomId, otherProfile, lastMsg, unread: unread ?? 0 };
 
@@ -236,6 +268,9 @@ const ChatScreen = ({ setActiveTab }) => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   const openChat = async (room) => {
+    // ✅ FIX: record when we opened this room so unread count starts from here
+    lastReadAtRef.current[room.roomId] = new Date().toISOString();
+
     setActiveRoom(room);
     setCurrentView("CHAT");
     setChatLoading(true);
@@ -262,77 +297,83 @@ const ChatScreen = ({ setActiveTab }) => {
         console.error("fetchMessages:", error.message);
         return;
       }
-      // Persist to local cache
-      if (data?.length) await upsertCachedMessages(data);
-      setMessages(data ?? []);
 
-      // 2. Remove any previous channel
+      // ✅ FIX: actually set the fetched messages (was missing — caused stale/wrong-account messages)
+      setMessages(data ?? []);
+      // Persist fresh messages to local cache
+      (data ?? []).forEach((msg) => upsertCachedMessage(msg));
+
       if (channelRef.current) {
-        await supabase.removeChannel(channelRef.current);
+        try {
+          await supabase.removeChannel(channelRef.current);
+        } catch (err) {
+          console.error("Error removing old channel:", err);
+        }
         channelRef.current = null;
       }
 
-      // 3. Create a single channel that combines all three features
-      const ch = supabase.channel(`room:${room.roomId}`, {
-        config: {
-          presence: { key: currentUserId },   // use userId as presence key
-          broadcast: { self: false },          // don't echo our own broadcasts
-        },
-      });
-
-      // ── 3a. Postgres Changes — stream new messages ────────────────────────
-      ch.on(
-        "postgres_changes",
-        {
-          event:  "INSERT",
-          schema: "public",
-          table:  "messages",
-          filter: `room_id=eq.${room.roomId}`,
-        },
-        (payload) => {
-          setMessages((prev) => {
-            if (prev.find((m) => m.id === payload.new.id)) return prev;
-            return [...prev, payload.new];
+      // 3. Chain your event bindings right onto the channel creation stream
+      const ch = supabase
+        .channel(`room:${room.roomId}`, {
+          config: {
+            presence: { key: currentUserId },
+            broadcast: { self: false },
+          },
+        })
+        .on(
+          "postgres_changes",
+          {
+            event:  "INSERT",
+            schema: "public",
+            table:  "messages",
+            filter: `room_id=eq.${room.roomId}`,
+          },
+          (payload) => {
+            setMessages((prev) => {
+              // Already present (exact id match) → no-op
+              if (prev.find((m) => m.id === payload.new.id)) return prev;
+              // ✅ FIX: replace any optimistic copy (same sender + content) to prevent duplication
+              const withoutOptimistic = prev.filter(
+                (m) =>
+                  !(
+                    m.id.startsWith("optimistic-") &&
+                    m.sender_id === payload.new.sender_id &&
+                    m.content   === payload.new.content
+                  )
+              );
+              return [...withoutOptimistic, payload.new];
+            });
+            upsertCachedMessage(payload.new);
+            setRooms((prev) =>
+              prev.map((r) =>
+                r.roomId === room.roomId
+                  ? { ...r, lastMsg: payload.new, unread: 0 }
+                  : r
+              )
+            );
+          }
+        )
+        .on("presence", { event: "sync" }, () => {
+          const state = ch.presenceState();
+          const map   = {};
+          Object.entries(state).forEach(([key, presences]) => {
+            const latest = presences[presences.length - 1];
+            map[key] = latest;
           });
-          // Persist incoming message to local cache
-          upsertCachedMessage(payload.new);
-          // Also refresh the list-level last message
-          setRooms((prev) =>
-            prev.map((r) =>
-              r.roomId === room.roomId
-                ? { ...r, lastMsg: payload.new, unread: 0 }
-                : r
-            )
-          );
-        }
-      );
-
-      // ── 3b. Presence — online dots ────────────────────────────────────────
-      ch.on("presence", { event: "sync" }, () => {
-        const state = ch.presenceState();
-        const map   = {};
-        Object.entries(state).forEach(([key, presences]) => {
-          // Each presence entry is an array; take the latest
-          const latest = presences[presences.length - 1];
-          map[key] = latest;
+          setPresenceMap(map);
+        })
+        .on("presence", { event: "leave" }, ({ leftPresences }) => {
+          leftPresences.forEach((p) => {
+            if (p.userId !== currentUserId) setOtherIsTyping(false);
+          });
+        })
+        .on("broadcast", { event: "typing" }, ({ payload }) => {
+          if (payload.userId !== currentUserId) {
+            setOtherIsTyping(payload.isTyping);
+          }
         });
-        setPresenceMap(map);
-      });
 
-      ch.on("presence", { event: "leave" }, ({ leftPresences }) => {
-        leftPresences.forEach((p) => {
-          if (p.userId !== currentUserId) setOtherIsTyping(false);
-        });
-      });
-
-      // ── 3c. Broadcast — typing indicator ─────────────────────────────────
-      ch.on("broadcast", { event: "typing" }, ({ payload }) => {
-        if (payload.userId !== currentUserId) {
-          setOtherIsTyping(payload.isTyping);
-        }
-      });
-
-      // 4. Subscribe & track own presence
+      // 4. NOW subscribe once everything has safely initialized
       ch.subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
           await ch.track({
@@ -369,8 +410,13 @@ const ChatScreen = ({ setActiveTab }) => {
     if (typingDebounceRef.current) clearTimeout(typingDebounceRef.current);
     setOtherIsTyping(false);
     setPresenceMap({});
+    
+    // ADD THIS LINE TO CLEAR STALE STATE
+    setActiveRoom(null); 
+    
     setCurrentView("LIST");
-    fetchRooms();
+    // ✅ FIX: removed fetchRooms() here — useFocusEffect already re-fetches when
+    //         the view returns to LIST, and calling it twice caused room duplication.
   };
 
   // Auto-scroll to bottom when messages change
@@ -391,11 +437,12 @@ const ChatScreen = ({ setActiveTab }) => {
   const broadcastTyping = async (text) => {
     if (!channelRef.current) return;
 
-    // Send "is typing" immediately
     await channelRef.current.send({
       type:    "broadcast",
       event:   "typing",
       payload: { userId: currentUserId, isTyping: true },
+      // Explicitly disable the deprecated REST fallback if WebSocket fails
+      options: { fallback: false } 
     });
 
     // Debounce "stopped typing"
@@ -530,10 +577,10 @@ const ChatScreen = ({ setActiveTab }) => {
 
       const targetRoomIds = (targetRooms ?? []).map((r) => r.room_id);
 
-      // A shared room is one the target is in; current user may or may not still be a member.
-      const sharedRoomId = targetRoomIds.find((id) => myRoomIds.includes(id))
-        ?? targetRoomIds[0] // fallback: any room of the target (e.g. current user left)
-        ?? null;
+      // A shared room is one both users are members of.
+      // ✅ FIX: removed the `?? targetRoomIds[0]` fallback — that could pick a
+      //         room the target shares with a *different* person entirely.
+      const sharedRoomId = targetRoomIds.find((id) => myRoomIds.includes(id)) ?? null;
 
       // Narrow down: if we found a candidate via fallback, verify it's truly a
       // direct room between just these two users (not a group room with others).

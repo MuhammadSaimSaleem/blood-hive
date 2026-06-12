@@ -7,11 +7,12 @@ import { useTheme } from "../context";
 import { useLocalSearchParams } from "expo-router";
 import DashboardScreen from "./dashboard";
 import HistoryScreen from "./history";
+import MatchesScreen from "./matches";
 import ChatScreen from "./messages";
 import SupportScreen from "./support";
 
 const COLORS = {
-  primary: "#D0021B", 
+  primary: "#D0021B",
   backgroundLight: "#FFFFFF",
   backgroundDark: "#121212",
   textLightSecondary: "#636366",
@@ -22,6 +23,9 @@ export default function MainScreen() {
   const { isDarkMode } = useTheme();
   const { tab } = useLocalSearchParams();
   const [activeTab, setActiveTab] = useState("dashboard");
+
+  // Shared chat context — set by MatchesScreen, consumed by ChatScreen
+  const [chatParams, setChatParams] = useState(null);
 
   useEffect(() => {
     if (tab) {
@@ -34,7 +38,14 @@ export default function MainScreen() {
       case "dashboard":
         return <DashboardScreen setActiveTab={setActiveTab} />;
       case "messages":
-        return <ChatScreen setActiveTab={setActiveTab} />;
+        return <ChatScreen setActiveTab={setActiveTab} chatParams={chatParams} />;
+      case "matches":
+        return (
+          <MatchesScreen
+            setActiveTab={setActiveTab}
+            setChatParams={setChatParams}
+          />
+        );
       case "history":
         return <HistoryScreen setActiveTab={setActiveTab} />;
       case "support":
@@ -45,21 +56,37 @@ export default function MainScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: isDarkMode ? COLORS.backgroundDark : COLORS.backgroundLight }]}>
-      
+    <SafeAreaView
+      style={[
+        styles.safeArea,
+        {
+          backgroundColor: isDarkMode
+            ? COLORS.backgroundDark
+            : COLORS.backgroundLight,
+        },
+      ]}
+    >
       {/* Sub-View Container */}
       {renderFragment()}
 
       {/* Unified Bottom Navigation */}
-      <View style={[styles.bottomNav, {
-        backgroundColor: isDarkMode ? COLORS.backgroundDark : COLORS.backgroundLight,
-        borderTopColor: isDarkMode ? "#2A2A2A" : "#E5E7EB",
-      }]}>
+      <View
+        style={[
+          styles.bottomNav,
+          {
+            backgroundColor: isDarkMode
+              ? COLORS.backgroundDark
+              : COLORS.backgroundLight,
+            borderTopColor: isDarkMode ? "#2A2A2A" : "#E5E7EB",
+          },
+        ]}
+      >
         {[
-          { id: "dashboard", icon: "dashboard", label: "Dashboard" },
-          { id: "messages", icon: "chat", label: "Messages" },
-          { id: "history", icon: "history", label: "History" },
-          { id: "support", icon: "support-agent", label: "Support" },
+          { id: "dashboard", icon: "dashboard",     label: "Dashboard" },
+          { id: "messages",  icon: "chat",           label: "Messages"  },
+          { id: "matches",   icon: "emoji-people",   label: "Matches"   },
+          { id: "history",   icon: "history",        label: "History"   },
+          { id: "support",   icon: "support-agent",  label: "Support"   },
         ].map((item) => {
           const isActive = activeTab === item.id;
           const iconColor = isActive

@@ -1,6 +1,8 @@
 import { MaterialIcons } from "@expo/vector-icons";
-import { useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useEffect, useRef, useState } from "react";
 import {
+  Alert,
   Animated,
   KeyboardAvoidingView,
   Linking,
@@ -13,6 +15,7 @@ import {
   TouchableOpacity,
   View
 } from "react-native";
+import Markdown from 'react-native-markdown-display';
 import { useTheme } from "../context";
 
 const COLORS = {
@@ -31,20 +34,35 @@ const COLORS = {
   gray800: "#1F2937",
 };
 
-const LOCAL_PC_IP = "10.247.118.77";
-const ANTHROPIC_URL = `http://${LOCAL_PC_IP}:1234/chat`;
+const markdownStyles = (textColor) => ({
+  body: { color: textColor, fontSize: 14, lineHeight: 20 },
+  strong: { fontWeight: "700", color: textColor },
+  em: { fontStyle: "italic", color: textColor },
+  bullet_list: { color: textColor },
+  ordered_list: { color: textColor },
+  code_inline: {
+    backgroundColor: "rgba(0,0,0,0.08)",
+    borderRadius: 4,
+    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+    fontSize: 13,
+    color: textColor,
+  },
+});
+
+const PROXY_URL = "http://10.167.79.77:3000/chat";
+const CHAT_HISTORY_KEY = "bloodhive_ai_chat_history";
 
 // ─────────────────────────────────────────────
 // AI Chat Modal
 // ─────────────────────────────────────────────
+const WELCOME_MESSAGE = {
+  id: "welcome",
+  role: "assistant",
+  text: "Hi! I'm Blood Hive AI. Ask me anything about blood donation eligibility, rules, or how to use the platform.",
+};
+
 const AIChatModal = ({ visible, onClose, isDarkMode }) => {
-  const [messages, setMessages] = useState([
-    {
-      id: "welcome",
-      role: "assistant",
-      text: "Hi! I'm Blood Hive AI. Ask me anything about blood donation eligibility, rules, or how to use the platform.",
-    },
-  ]);
+  const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [userInput, setUserInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const scrollViewRef = useRef(null);
@@ -56,6 +74,62 @@ const AIChatModal = ({ visible, onClose, isDarkMode }) => {
   const borderColor = isDarkMode ? "#2A2A2A" : "#E5E7EB";
   const textPrimaryColor = isDarkMode ? COLORS.textDarkPrimary : COLORS.textLightPrimary;
   const textSecondaryColor = isDarkMode ? COLORS.textDarkSecondary : COLORS.textLightSecondary;
+
+  // ── Load history from AsyncStorage on mount ──
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(CHAT_HISTORY_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setMessages(parsed);
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to load chat history:", e);
+      }
+    };
+    loadHistory();
+  }, []);
+
+  // ── Persist messages to AsyncStorage whenever they change ──
+  useEffect(() => {
+    const saveHistory = async () => {
+      try {
+        await AsyncStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(messages));
+      } catch (e) {
+        console.warn("Failed to save chat history:", e);
+      }
+    };
+    // Don't save if it's just the default welcome message
+    if (messages.length > 1 || messages[0]?.id !== "welcome") {
+      saveHistory();
+    }
+  }, [messages]);
+
+  // ── New Chat with confirmation ──
+  const handleNewChat = () => {
+    Alert.alert(
+      "Start New Chat",
+      "This will clear your entire conversation history. Are you sure?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await AsyncStorage.removeItem(CHAT_HISTORY_KEY);
+            } catch (e) {
+              console.warn("Failed to clear chat history:", e);
+            }
+            setMessages([WELCOME_MESSAGE]);
+          },
+        },
+      ]
+    );
+  };
 
   const sendMessage = async () => {
     const trimmed = userInput.trim();
@@ -71,12 +145,16 @@ const AIChatModal = ({ visible, onClose, isDarkMode }) => {
 
     try {
       // Build conversation history for context (last 10 msgs)
-      const history = [...messages, userMsg]
+      const rawHistory = [...messages, userMsg]
         .slice(-10)
         .filter((m) => m.id !== "welcome")
         .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text }));
 
-      const response = await fetch(ANTHROPIC_URL, {
+      // Trim any leading assistant turns
+      const firstUserIdx = rawHistory.findIndex(m => m.role === "user");
+      const history = firstUserIdx >= 0 ? rawHistory.slice(firstUserIdx) : rawHistory;
+
+      const response = await fetch(PROXY_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: history }),
@@ -105,6 +183,8 @@ const AIChatModal = ({ visible, onClose, isDarkMode }) => {
     }
   };
 
+  const hasUserMessages = messages.some((m) => m.role === "user");
+
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <KeyboardAvoidingView
@@ -125,9 +205,22 @@ const AIChatModal = ({ visible, onClose, isDarkMode }) => {
               </Text>
             </View>
           </View>
-          <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn} activeOpacity={0.7}>
-            <MaterialIcons name="close" size={22} color={textSecondaryColor} />
-          </TouchableOpacity>
+          <View style={modalStyles.headerRight}>
+            {/* New Chat button — only show when there's conversation history */}
+            {hasUserMessages && (
+              <TouchableOpacity
+                onPress={handleNewChat}
+                style={[modalStyles.newChatBtn, { borderColor }]}
+                activeOpacity={0.7}
+              >
+                <MaterialIcons name="add" size={15} color={textSecondaryColor} />
+                <Text style={[modalStyles.newChatText, { color: textSecondaryColor }]}>New</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn} activeOpacity={0.7}>
+              <MaterialIcons name="close" size={22} color={textSecondaryColor} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Messages */}
@@ -161,14 +254,15 @@ const AIChatModal = ({ visible, onClose, isDarkMode }) => {
                       : [modalStyles.bubbleUser, { backgroundColor: COLORS.accentBlue }],
                   ]}
                 >
-                  <Text
-                    style={[
-                      modalStyles.bubbleText,
-                      { color: isAi ? textPrimaryColor : "#fff" },
-                    ]}
-                  >
-                    {msg.text}
-                  </Text>
+                  {isAi ? (
+                    <Markdown style={markdownStyles(textPrimaryColor)}>
+                      {msg.text}
+                    </Markdown>
+                  ) : (
+                    <Text style={[modalStyles.bubbleText, { color: "#fff" }]}>
+                      {msg.text}
+                    </Text>
+                  )}
                 </View>
               </View>
             );
@@ -190,29 +284,31 @@ const AIChatModal = ({ visible, onClose, isDarkMode }) => {
           )}
         </ScrollView>
 
-        {/* Suggested prompts (only show when no user messages yet) */}
-        {messages.length === 1 && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={modalStyles.suggestionsRow}
-          >
-            {[
-              "Can I donate after a tattoo?",
-              "What's the age limit?",
-              "How often can I donate?",
-              "Iron level requirements?",
-            ].map((s) => (
-              <TouchableOpacity
-                key={s}
-                style={[modalStyles.suggestionChip, { backgroundColor: surface, borderColor }]}
-                activeOpacity={0.75}
-                onPress={() => setUserInput(s)}
-              >
-                <Text style={[modalStyles.suggestionText, { color: textPrimaryColor }]}>{s}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+        {/* Suggested prompts — fixed height wrapper fixes the layout issue */}
+        {!hasUserMessages && (
+          <View style={modalStyles.suggestionsWrapper}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={modalStyles.suggestionsRow}
+            >
+              {[
+                "Can I donate after a tattoo?",
+                "What's the age limit?",
+                "How often can I donate?",
+                "Iron level requirements?",
+              ].map((s) => (
+                <TouchableOpacity
+                  key={s}
+                  style={[modalStyles.suggestionChip, { backgroundColor: surface, borderColor }]}
+                  activeOpacity={0.75}
+                  onPress={() => setUserInput(s)}
+                >
+                  <Text style={[modalStyles.suggestionText, { color: textPrimaryColor }]}>{s}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
         )}
 
         {/* Input Bar */}
@@ -597,6 +693,17 @@ const modalStyles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   headerLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
+  headerRight: { flexDirection: "row", alignItems: "center", gap: 8 },
+  newChatBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  newChatText: { fontSize: 12, fontWeight: "600" },
   aiAvatarSmall: {
     width: 36,
     height: 36,
@@ -647,7 +754,12 @@ const modalStyles = StyleSheet.create({
   typingDots: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 4 },
   dot: { width: 7, height: 7, borderRadius: 4 },
 
-  suggestionsRow: { paddingHorizontal: 16, paddingBottom: 12, gap: 8 },
+  // Fixed-height wrapper prevents the horizontal ScrollView from collapsing
+  suggestionsWrapper: {
+    height: 52,
+    justifyContent: "center",
+  },
+  suggestionsRow: { paddingHorizontal: 16, paddingVertical: 8, gap: 8, alignItems: "center" },
   suggestionChip: {
     paddingHorizontal: 14,
     paddingVertical: 8,

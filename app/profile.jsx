@@ -7,7 +7,6 @@ import {
   Alert,
   Image,
   Linking,
-  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -21,7 +20,8 @@ import { ActionRow, DangerZoneSection, StatsSection } from "../components/UIComp
 import { useRole, useTheme } from "../context";
 import { initDB, supabase } from "../lib";
 import { cacheProfileImage } from "../lib/fileSystem";
-import { getLocalProfile, saveLocalProfile } from "../lib/localDb";
+import { clearLocalProfile, getLocalProfile, saveLocalProfile } from "../lib/localDb";
+import { _profileCache } from "./dashboard";
 
 const COLORS = {
   primary:            "#D0021B",
@@ -45,8 +45,9 @@ const DEFAULT_AVATAR =
 
 const ProfileScreen = () => {
   const { isDarkMode, toggleTheme } = useTheme();
-  const { role, toggleRole } = useRole();
+  const { role } = useRole();
   const isDonor = role === "donor";
+  const isBoth = role === "both";
 
   const [userData, setUserData]       = useState(null);
   const [profileImage, setProfileImage] = useState(DEFAULT_AVATAR);
@@ -104,16 +105,19 @@ const ProfileScreen = () => {
           finalProfileImage = dbUser.profile_image_url;
         }
       } else if (dbUser?.full_name) {
-          const fileName = `${user.id}_${dbUser.full_name}.png`;
-          const { data: urlData } = supabase.storage
-            .from("profiles")
-            .getPublicUrl(`${user.id}/${fileName}`);
+          try {
+            const fileName = `${user.id}_${dbUser.full_name}.png`;
+            const { data: urlData } = supabase.storage
+              .from("profiles")
+              .getPublicUrl(`${user.id}/${fileName}`);
 
-          // getPublicUrl returns { data: { publicUrl } } — guard before using
-          const publicUrl = urlData?.publicUrl;
-          if (publicUrl) {
-            finalProfileImage =
-              (await cacheProfileImage(publicUrl, user.id)) || publicUrl;
+            const publicUrl = urlData?.publicUrl;
+            if (publicUrl) {
+              finalProfileImage =
+                (await cacheProfileImage(publicUrl, user.id)) || publicUrl;
+            }
+          } catch {
+            // leave finalProfileImage as DEFAULT_AVATAR
           }
         }
 
@@ -140,24 +144,41 @@ const ProfileScreen = () => {
   }, []);
 
   // ─── Logout ──────────────────────────────────────────────────────────────────
-  const handleLogout = () => {
-    const logoutAction = async () => {
-      const { error } = await supabase.auth.signOut();
-      if (error) {
-        Alert.alert("Logout Failed", error.message);
-      } else {
-        router.replace("/login");
-      }
-    };
+  const handleLogout = async () => {
+    Alert.alert(
+      "Log Out",
+      "Are you sure you want to log out?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Log Out",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              // 1. CLEAR THE GLOBAL RUNTIME MEMORY CACHE
+              _profileCache.userId = null;
+              _profileCache.userName = "";
+              _profileCache.role = "";
+              _profileCache.fetched = false;
+              _profileCache.activeView = "recipient";
+              
+              await clearLocalProfile();
 
-    if (Platform.OS === "web") {
-      if (window.confirm("Are you sure you want to log out?")) logoutAction();
-    } else {
-      Alert.alert("Log Out", "Are you sure you want to log out?", [
-        { text: "Cancel",  style: "cancel"      },
-        { text: "Log Out", style: "destructive", onPress: logoutAction },
-      ]);
-    }
+              // 3. LOG OUT FROM SUPABASE AUTH
+              const { error } = await supabase.auth.signOut();
+              if (error) throw error;
+
+              // 4. ROUTE USER BACK TO LOGIN SCREEN
+              router.replace("/login");
+            } catch (error) {
+              console.error("Error during complete logout sequence:", error);
+              Alert.alert("Error", "Failed to log out cleanly. Please try again.");
+            }
+          },
+        },
+      ],
+      { cancelable: true }
+    );
   };
 
   // ─── Loading State ───────────────────────────────────────────────────────────
@@ -247,7 +268,7 @@ const ProfileScreen = () => {
         </View>
 
         {/* ── Role Toggle ───────────────────────────────────────────────────── */}
-        <View style={styles.section}>
+        {!isBoth && <View style={styles.section}>
           <Text style={[styles.sectionLabel, textSecondary]}>Role</Text>
           <View style={[styles.card, { backgroundColor: surface }]}>
             <View style={styles.toggleRow}>
@@ -263,7 +284,7 @@ const ProfileScreen = () => {
                 </Text>
                 <Switch
                   value={isDonor}
-                  onValueChange={toggleRole}
+                  onValueChange={() => router.push('/role_switch')}
                   trackColor={{
                     false: isDarkMode ? "#3A3A3C" : "#D1D5DB",
                     true:  "#FCA5A5",
@@ -279,7 +300,7 @@ const ProfileScreen = () => {
               </View>
             </View>
           </View>
-        </View>
+        </View>}
 
         {/* ── Account Settings ────────────────────────────────────────────────── */}
         <View style={styles.section}>

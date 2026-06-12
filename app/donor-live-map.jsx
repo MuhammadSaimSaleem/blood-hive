@@ -103,7 +103,7 @@ const DonorLiveMapScreen = () => {
         const delta = 0.14; // ~15 km bounding box
         const { data, error } = await supabase
           .from("users")
-          .select("id, name, blood_type, latitude, longitude, phone")
+          .select("id, full_name, blood_type, latitude, longitude, phone")
           .eq("role", "donors")
           .eq("blood_type", bloodType)
           .eq("is_available", true)
