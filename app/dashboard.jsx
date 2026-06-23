@@ -6,6 +6,7 @@ import {
   Alert,
   BackHandler,
   Platform,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -43,6 +44,7 @@ const DashboardScreen = ({ setActiveTab }) => {
 
   const [currentRequestActive, setCurrentRequestActive] = useState(false);
   const [activeView, setActiveView] = useState(_profileCache.activeView);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     if (_profileCache.fetched && _profileCache.role) {
@@ -137,6 +139,47 @@ const DashboardScreen = ({ setActiveTab }) => {
     router.push("/create_request");
   };
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!user) { router.replace("/login"); return; }
+
+      const { data: profile, error: profileError } = await supabase
+        .from("users")
+        .select("role, full_name")
+        .eq("id", user.id)
+        .single();
+      if (profileError) throw profileError;
+
+      const resolvedRole = profile?.role?.toLowerCase() ?? "";
+      const resolvedName = profile?.full_name?.split(" ")[0] ?? "";
+
+      _profileCache.userId   = user.id;
+      _profileCache.userName = resolvedName;
+      _profileCache.role     = resolvedRole;
+      _profileCache.fetched  = true;
+
+      // Clear recipient sub-cache so child components re-fetch fresh data
+      recipientCache.current = {
+        recipientData:     null,
+        requestHistory:    null,
+        dashNotifications: null,
+        donorActivity:     null,
+        allDonorActivity:  null,
+      };
+
+      setUserId(user.id);
+      setUserName(resolvedName);
+      if (resolvedRole) setRole(resolvedRole);
+    } catch (err) {
+      console.error("Error refreshing dashboard:", err?.message ?? err);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <View style={[styles.safeArea, bgStyle]}>
       <View style={{ flex: 1 }}>
@@ -210,6 +253,14 @@ const DashboardScreen = ({ setActiveTab }) => {
             style={{ flex: 1 }}
             contentContainerStyle={{ paddingBottom: 120 }}
             showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                colors={[COLORS.primary]}
+                tintColor={COLORS.primary}
+              />
+            }
           >
             {!isDonor && !isRecipient && !isBoth && (
               <View style={styles.noRoleContainer}>

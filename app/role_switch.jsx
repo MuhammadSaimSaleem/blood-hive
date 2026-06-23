@@ -42,30 +42,22 @@ export default function SwitchRoleScreen() {
   const [loading, setLoading] = useState(false);
   const { role } = useRole();
 
-  // Determine target role: donor → recipient, recipient → donor, default to recipient
+  // Always switch to 'both' regardless of current role
   const isCurrentlyDonor = role === 'donor';
-  const targetRole = isCurrentlyDonor ? 'recipient' : 'donor';
+  const targetRole = 'both';
 
   const roleConfig = {
-    recipient: {
-      heading: 'Switch to Recipient Mode',
+    both: {
+      heading: 'Switch to Donor & Recipient',
       subheading:
-        'Transitioning to Recipient mode allows you to prioritize urgent medical needs, manage requests for yourself, or coordinate blood supplies for others.',
-      chipIcon: 'favorite',
-      confirmLabel: 'Switch to Recipient',
-      keepLabel: 'Keep Donor Status',
-    },
-    donor: {
-      heading: 'Switch to Donor Mode',
-      subheading:
-        'Transitioning to Donor mode lets you offer blood, respond to urgent requests, and become part of a life-saving network for those in need.',
-      chipIcon: 'person',
-      confirmLabel: 'Switch to Donor',
-      keepLabel: 'Keep Recipient Status',
+        'Switching to Both mode lets you donate blood and make requests at the same time — giving and receiving support within the same life-saving network.',
+      chipIcon: 'swap-horiz',
+      confirmLabel: 'Switch to Both',
+      keepLabel: isCurrentlyDonor ? 'Keep Donor Status' : 'Keep Recipient Status',
     },
   };
 
-  const config = roleConfig[targetRole];
+  const config = roleConfig['both'];
 
   const handleConfirmSwitch = async () => {
     setLoading(true);
