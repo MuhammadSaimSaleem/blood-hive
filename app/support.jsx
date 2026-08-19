@@ -49,7 +49,7 @@ const markdownStyles = (textColor) => ({
   },
 });
 
-const PROXY_URL = "http://10.167.79.77:3000/chat";
+const PROXY_URL = "http://192.168.1.7:3000/chat";
 const CHAT_HISTORY_KEY = "bloodhive_ai_chat_history";
 
 // ─────────────────────────────────────────────
